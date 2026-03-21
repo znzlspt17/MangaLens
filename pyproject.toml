@@ -1,0 +1,47 @@
+[project]
+name = "mangalens"
+version = "0.1.0"
+description = "Japanese manga image translation service"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.18",
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "manga-ocr>=0.1.14",
+    "Pillow>=11.0",
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26",
+    "httpx>=0.28",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "websockets>=14.0",
+    "aiofiles>=24.1",
+    "realesrgan>=0.3.0",
+]
+# comic-text-detector: pip 패키지 아님 — models/ 디렉토리에 가중치 직접 관리
+# simple-lama-inpainting: Pillow<10 요구하여 충돌 — LaMa 추론 직접 구현 (torch + 가중치 다운로드)
+# 사용법: python -m mangalens.download 스크립트로 모델/폰트 자동 다운로드
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.uv]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }

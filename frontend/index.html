@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MangaLens — 만화 번역</title>
+  <meta name="description" content="일본어 만화 이미지를 자동으로 번역합니다" />
+  <link rel="stylesheet" href="/css/themes.css" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+  <!-- ============ Header ============ -->
+  <header class="header" role="banner">
+    <div class="header__logo" aria-label="MangaLens">MangaLens</div>
+    <div class="header__actions">
+      <button class="icon-btn" id="theme-toggle" aria-label="테마 전환" title="테마 전환">☀️</button>
+      <button class="icon-btn" id="settings-btn" aria-label="설정" title="설정">⚙️</button>
+    </div>
+  </header>
+
+  <!-- ============ Main ============ -->
+  <main class="main" role="main">
+
+    <!-- 1. Upload Section -->
+    <section id="upload-section" class="section active" aria-label="이미지 업로드">
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="파일을 드래그앤드롭하거나 클릭하여 선택">
+        <div class="dropzone__icon" aria-hidden="true">📁</div>
+        <div class="dropzone__text">파일을 여기에 끌어놓거나 클릭하세요</div>
+        <div class="dropzone__hint">JPG, PNG, WebP, BMP, TIFF · 최대 50MB</div>
+        <button type="button" class="file-select-btn" id="file-select-btn">파일 선택</button>
+      </div>
+      <input type="file" class="file-input-hidden" id="file-input" multiple
+             accept=".jpg,.jpeg,.png,.webp,.bmp,.tiff,.tif" />
+      <div class="file-preview-grid" id="file-preview-grid"></div>
+      <div class="upload-actions">
+        <button type="button" class="btn-primary" id="upload-btn" disabled>번역 시작</button>
+      </div>
+    </section>
+
+    <!-- 2. Progress Section -->
+    <section id="progress-section" class="section" aria-label="번역 진행률">
+      <div class="progress-container">
+        <div class="progress-header">
+          <div class="progress-header__title">번역 진행 중…</div>
+          <div class="progress-header__status" id="progress-status">준비 중</div>
+        </div>
+        <div class="progress-bar-wrapper" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-bar-fill" id="progress-bar" style="width:0%"></div>
+          <div class="progress-bar-text" id="progress-text">0%</div>
+        </div>
+        <div class="progress-stats">
+          <span>완료 <strong class="progress-stats__completed" id="progress-completed">0</strong> / <span id="progress-total">0</span></span>
+          <span>실패 <strong class="progress-stats__failed" id="progress-failed">0</strong></span>
+        </div>
+        <div class="progress-actions">
+          <button type="button" class="btn-secondary" id="cancel-btn">취소</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Result Section -->
+    <section id="result-section" class="section" aria-label="번역 결과">
+      <div class="result-container">
+        <div class="result-icon" id="result-icon">✅</div>
+        <div class="result-title" id="result-title">번역 완료</div>
+        <div class="result-summary" id="result-summary"></div>
+        <div class="result-actions">
+          <button type="button" class="btn-primary" id="download-btn">다운로드</button>
+          <button type="button" class="btn-secondary" id="new-translate-btn">새로운 번역</button>
+        </div>
+      </div>
+
+      <!-- Comparison Viewer -->
+      <div class="comparison-viewer" id="comparison-viewer" style="display: none;">
+        <div class="comparison-container" id="comparison-container">
+          <div class="comparison-image comparison-original">
+            <img id="comparison-original-img" alt="원본">
+            <span class="comparison-label">원본</span>
+          </div>
+          <div class="comparison-image comparison-translated" id="comparison-overlay">
+            <img id="comparison-translated-img" alt="번역본">
+            <span class="comparison-label">번역본</span>
+          </div>
+          <div class="comparison-slider" id="comparison-slider" role="slider" aria-label="비교 슬라이더" aria-valuenow="50" aria-valuemin="0" aria-valuemax="100">
+            <div class="comparison-slider-line"></div>
+            <div class="comparison-slider-handle">⟷</div>
+          </div>
+        </div>
+      </div>
+      <div class="comparison-unavailable" id="comparison-unavailable" style="display: none;">
+        <p>Bulk 업로드의 경우 비교 뷰어를 사용할 수 없습니다.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============ Settings Modal ============ -->
+  <div class="modal-overlay" id="settings-modal" role="dialog" aria-modal="true" aria-label="설정">
+    <div class="modal">
+      <div class="modal__header">
+        <div class="modal__title">설정</div>
+        <button class="modal__close" id="modal-close" aria-label="닫기">✕</button>
+      </div>
+      <div class="modal__body">
+        <!-- DeepL -->
+        <div class="form-group">
+          <label class="form-label" for="deepl-key">DeepL API 키</label>
+          <div class="input-group">
+            <input type="password" id="deepl-key" placeholder="DeepL API 키 입력" autocomplete="off" />
+            <button type="button" class="toggle-vis" data-target="deepl-key" aria-label="키 표시/숨기기">👁</button>
+          </div>
+          <div class="form-hint" id="deepl-status"></div>
+        </div>
+        <!-- Google -->
+        <div class="form-group">
+          <label class="form-label" for="google-key">Google API 키</label>
+          <div class="input-group">
+            <input type="password" id="google-key" placeholder="Google API 키 입력" autocomplete="off" />
+            <button type="button" class="toggle-vis" data-target="google-key" aria-label="키 표시/숨기기">👁</button>
+          </div>
+          <div class="form-hint" id="google-status"></div>
+        </div>
+        <!-- GPU Info -->
+        <div class="form-group">
+          <label class="form-label">GPU 정보</label>
+          <div class="gpu-info" id="gpu-info">
+            <div class="gpu-info__row"><span class="gpu-info__label">상태</span><span id="gpu-status-text">확인 중…</span></div>
+            <div class="gpu-info__row"><span class="gpu-info__label">GPU</span><span id="gpu-name">-</span></div>
+            <div class="gpu-info__row"><span class="gpu-info__label">백엔드</span><span id="gpu-backend">-</span></div>
+            <div class="gpu-info__row"><span class="gpu-info__label">VRAM</span><span id="gpu-vram">-</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal__footer">
+        <button type="button" class="btn-secondary" id="modal-cancel">취소</button>
+        <button type="button" class="btn-primary" id="settings-save">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Toast Container ============ -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- ============ Status Bar ============ -->
+  <footer class="status-bar" role="contentinfo">
+    <span class="status-dot status-dot--not-ready" id="status-dot"></span>
+    <span id="status-label">서버 확인 중…</span>
+  </footer>
+
+  <!-- ============ Scripts ============ -->
+  <script src="/js/api.js"></script>
+  <script src="/js/upload.js"></script>
+  <script src="/js/progress.js"></script>
+  <script src="/js/result.js"></script>
+  <script src="/js/settings.js"></script>
+  <script src="/js/app.js"></script>
+
+</body>
+</html>

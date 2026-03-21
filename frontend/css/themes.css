@@ -1,0 +1,76 @@
+/* ============================================================
+   MangaLens — Theme Variables (Light / Dark)
+   ============================================================ */
+
+:root,
+[data-theme="light"] {
+  --bg-primary:    #f8f9fa;
+  --bg-card:       #ffffff;
+  --bg-input:      #f3f4f6;
+  --text-primary:  #1a1a2e;
+  --text-secondary:#6b7280;
+  --accent:        #4f46e5;
+  --accent-hover:  #4338ca;
+  --accent-light:  rgba(79, 70, 229, 0.1);
+  --success:       #10b981;
+  --danger:        #ef4444;
+  --warning:       #f59e0b;
+  --border:        #e5e7eb;
+  --shadow:        0 1px 3px rgba(0,0,0,0.08);
+  --shadow-lg:     0 4px 16px rgba(0,0,0,0.1);
+  --overlay:       rgba(0,0,0,0.4);
+  --dropzone-bg:   #f9fafb;
+  --toast-bg:      #1a1a2e;
+  --toast-text:    #ffffff;
+  --progress-track:#e5e7eb;
+  --scrollbar-thumb:#c4c4c4;
+}
+
+[data-theme="dark"] {
+  --bg-primary:    #0f0f14;
+  --bg-card:       #1a1a2e;
+  --bg-input:      #24243a;
+  --text-primary:  #e5e5e5;
+  --text-secondary:#9ca3af;
+  --accent:        #818cf8;
+  --accent-hover:  #6366f1;
+  --accent-light:  rgba(129, 140, 248, 0.12);
+  --success:       #34d399;
+  --danger:        #f87171;
+  --warning:       #fbbf24;
+  --border:        #2d2d44;
+  --shadow:        0 1px 3px rgba(0,0,0,0.3);
+  --shadow-lg:     0 4px 16px rgba(0,0,0,0.4);
+  --overlay:       rgba(0,0,0,0.6);
+  --dropzone-bg:   #16162a;
+  --toast-bg:      #e5e5e5;
+  --toast-text:    #1a1a2e;
+  --progress-track:#2d2d44;
+  --scrollbar-thumb:#444;
+}
+
+/* System preference when no explicit theme is set */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg-primary:    #0f0f14;
+    --bg-card:       #1a1a2e;
+    --bg-input:      #24243a;
+    --text-primary:  #e5e5e5;
+    --text-secondary:#9ca3af;
+    --accent:        #818cf8;
+    --accent-hover:  #6366f1;
+    --accent-light:  rgba(129, 140, 248, 0.12);
+    --success:       #34d399;
+    --danger:        #f87171;
+    --warning:       #fbbf24;
+    --border:        #2d2d44;
+    --shadow:        0 1px 3px rgba(0,0,0,0.3);
+    --shadow-lg:     0 4px 16px rgba(0,0,0,0.4);
+    --overlay:       rgba(0,0,0,0.6);
+    --dropzone-bg:   #16162a;
+    --toast-bg:      #e5e5e5;
+    --toast-text:    #1a1a2e;
+    --progress-track:#2d2d44;
+    --scrollbar-thumb:#444;
+  }
+}

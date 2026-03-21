@@ -1,0 +1,39 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Model weights
+models/*.pt
+models/*.pth
+models/*.onnx
+models/*.bin
+
+# Output
+output/
+
+# Environment
+.env
+
+# Lock file (commit if needed)
+# uv.lock
+
+# Font files (downloaded via server.download)
+fonts/*.ttf
+fonts/*.otf
+
+# Windows Zone Identifier alternate data streams
+*:Zone.Identifier
+
+# Generated test results
+resources/result/
+
+# Internal planning / session notes
+memories/idea.txt
+memories/repo/
+
+# Debug scripts
+run_test.py
