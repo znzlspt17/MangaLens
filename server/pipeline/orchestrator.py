@@ -19,6 +19,7 @@ from server.pipeline.preprocessor import Preprocessor
 from server.pipeline.text_eraser import TextEraser
 from server.pipeline.text_renderer import TextRenderer
 from server.pipeline.translator import Translator
+from server.config import settings as _server_settings
 from server.utils.reading_order import sort_bubbles_rtl
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ async def run_pipeline(
 
     # ── Stage 6: Text Rendering ────────────────────────────────────────
     logger.info("[6/7] Rendering translated text")
-    renderer = _get_cached(TextRenderer, "text_renderer", font_dir="./fonts")
+    renderer = _get_cached(TextRenderer, "text_renderer", font_dir=_server_settings.font_dir)
     rendered_bubbles: list[RenderedBubble] = []
 
     for ctx in contexts:

@@ -10,32 +10,78 @@
 </head>
 <body>
 
+  <!-- ============ Background Effects ============ -->
+  <div class="bg-screentone" aria-hidden="true"></div>
+  <div class="bg-focus-lines" aria-hidden="true"></div>
+
   <!-- ============ Header ============ -->
   <header class="header" role="banner">
     <div class="header__logo" aria-label="MangaLens">MangaLens</div>
     <div class="header__actions">
-      <button class="icon-btn" id="theme-toggle" aria-label="테마 전환" title="테마 전환">☀️</button>
-      <button class="icon-btn" id="settings-btn" aria-label="설정" title="설정">⚙️</button>
+      <button class="icon-btn" id="theme-toggle" aria-label="테마 전환" title="다크/라이트 모드 전환">☀️</button>
+      <button class="icon-btn" id="settings-btn" aria-label="설정 열기" title="API 키 및 시스템 설정">⚙️</button>
     </div>
   </header>
 
   <!-- ============ Main ============ -->
   <main class="main" role="main">
 
+    <!-- Step Indicator -->
+    <div class="step-bar" id="step-bar" aria-label="번역 진행 단계" role="list">
+      <div class="step step--active" id="step-1" data-step="1" role="listitem">
+        <div class="step__circle" aria-hidden="true">1</div>
+        <div class="step__label">업로드</div>
+      </div>
+      <div class="step__connector" aria-hidden="true"></div>
+      <div class="step" id="step-2" data-step="2" role="listitem">
+        <div class="step__circle" aria-hidden="true">2</div>
+        <div class="step__label">번역 중</div>
+      </div>
+      <div class="step__connector" aria-hidden="true"></div>
+      <div class="step" id="step-3" data-step="3" role="listitem">
+        <div class="step__circle" aria-hidden="true">3</div>
+        <div class="step__label">완료</div>
+      </div>
+    </div>
+
     <!-- 1. Upload Section -->
     <section id="upload-section" class="section active" aria-label="이미지 업로드">
-      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="파일을 드래그앤드롭하거나 클릭하여 선택">
-        <div class="dropzone__icon" aria-hidden="true">📁</div>
-        <div class="dropzone__text">파일을 여기에 끌어놓거나 클릭하세요</div>
-        <div class="dropzone__hint">JPG, PNG, WebP, BMP, TIFF · 최대 50MB</div>
-        <button type="button" class="file-select-btn" id="file-select-btn">파일 선택</button>
+
+      <!-- Hero -->
+      <div class="hero">
+        <div class="hero__badge"><span>✦ AI POWERED</span></div>
+        <h1 class="hero__title"><span class="highlight">만화</span> 번역,<br>빠르고 정확하게</h1>
+        <p class="hero__subtitle">일본어 만화 이미지를 올리면<br>AI가 텍스트를 감지하고 자동 번역합니다</p>
+        <div class="hero__features">
+          <span class="feature-tag">🔍 텍스트 감지</span>
+          <span class="feature-tag">📝 자동 OCR</span>
+          <span class="feature-tag">🌐 AI 번역</span>
+          <span class="feature-tag">🎨 이미지 합성</span>
+        </div>
       </div>
-      <input type="file" class="file-input-hidden" id="file-input" multiple
-             accept=".jpg,.jpeg,.png,.webp,.bmp,.tiff,.tif" />
-      <div class="file-preview-grid" id="file-preview-grid"></div>
-      <div class="upload-actions">
-        <button type="button" class="btn-primary" id="upload-btn" disabled>번역 시작</button>
+
+      <!-- API Key Banner -->
+      <div class="api-key-banner" id="api-key-banner" role="alert" style="display:none">
+        <span>⚠️ 번역 API 키가 없습니다. 키 없이는 일본어 원문이 그대로 출력됩니다.</span>
+        <button type="button" class="api-key-banner__btn" id="banner-settings-btn">API 키 설정 →</button>
       </div>
+
+      <!-- Upload Card (Manga Panel) -->
+      <div class="upload-card">
+        <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="파일을 드래그앤드롭하거나 클릭하여 선택">
+          <span class="dropzone__icon" aria-hidden="true">🖼️</span>
+          <div class="dropzone__text">이미지를 여기에 끌어놓거나 클릭하세요</div>
+          <div class="dropzone__hint">JPG · PNG · WebP · BMP · TIFF · 최대 50MB</div>
+          <button type="button" class="file-select-btn" id="file-select-btn">파일 선택</button>
+        </div>
+        <input type="file" class="file-input-hidden" id="file-input" multiple
+               accept=".jpg,.jpeg,.png,.webp,.bmp,.tiff,.tif" />
+        <div class="file-preview-grid" id="file-preview-grid"></div>
+        <div class="upload-actions">
+          <button type="button" class="btn-primary" id="upload-btn" disabled>번역 시작</button>
+        </div>
+      </div>
+
     </section>
 
     <!-- 2. Progress Section -->
@@ -67,12 +113,14 @@
         <div class="result-summary" id="result-summary"></div>
         <div class="result-actions">
           <button type="button" class="btn-primary" id="download-btn">다운로드</button>
+          <button type="button" class="btn-secondary" id="retry-btn" style="display:none">다시 시도</button>
           <button type="button" class="btn-secondary" id="new-translate-btn">새로운 번역</button>
         </div>
       </div>
 
       <!-- Comparison Viewer -->
       <div class="comparison-viewer" id="comparison-viewer" style="display: none;">
+        <div class="comparison-viewer-label">← 슬라이더로 원본 / 번역본 비교 →</div>
         <div class="comparison-container" id="comparison-container">
           <div class="comparison-image comparison-original">
             <img id="comparison-original-img" alt="원본">

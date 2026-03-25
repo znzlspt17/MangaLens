@@ -54,8 +54,16 @@ class TextRenderer:
                     if f.suffix.lower() in (".ttf", ".otf"):
                         self._font_path = str(f)
                         break
-            if self._font_path:
-                logger.info("Using font: %s", self._font_path)
+        self._is_variable_font: bool = False
+        if self._font_path:
+            logger.info("Using font: %s", self._font_path)
+            # Detect variable font once at init
+            try:
+                _probe = ImageFont.truetype(self._font_path, 12)
+                _probe.set_variation_by_axes([_FONT_WEIGHT])
+                self._is_variable_font = True
+            except Exception:
+                self._is_variable_font = False
 
         if self._font_path is None:
             logger.warning(
@@ -66,14 +74,10 @@ class TextRenderer:
     def _load_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         """Load font at the given size with bold weight."""
         if self._font_path:
-            try:
-                font = ImageFont.truetype(self._font_path, size)
-                # Set bold weight for variable fonts
+            font = ImageFont.truetype(self._font_path, size)
+            if self._is_variable_font:
                 font.set_variation_by_axes([_FONT_WEIGHT])
-                return font
-            except Exception:
-                # Not a variable font or axis error — use as-is
-                return ImageFont.truetype(self._font_path, size)
+            return font
         return ImageFont.load_default(size=size)
 
     async def render(

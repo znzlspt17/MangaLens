@@ -75,6 +75,7 @@ class UserSettingsResponse(BaseModel):
     """Response model with masked keys."""
     deepl_api_key: str | None = None
     google_api_key: str | None = None
+    session_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

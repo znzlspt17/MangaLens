@@ -4,6 +4,16 @@
 
 const API = (() => {
   const BASE = '/api';
+  const _SESSION_KEY = 'mangalens_session_id';
+
+  /** Get or persist session ID in localStorage */
+  function _getSessionId() {
+    return localStorage.getItem(_SESSION_KEY) || '';
+  }
+
+  function setSessionId(sid) {
+    if (sid) localStorage.setItem(_SESSION_KEY, sid);
+  }
 
   /**
    * Generic fetch wrapper with JSON parsing and error handling.
@@ -14,6 +24,10 @@ const API = (() => {
   async function request(path, opts = {}) {
     const url = `${BASE}${path}`;
     const headers = { ...(opts.headers || {}) };
+
+    // 세션 ID를 헤더로 항상 전달 (쿠키 secure 제한 우회)
+    const sid = _getSessionId();
+    if (sid) headers['X-Session-Id'] = sid;
 
     const res = await fetch(url, {
       ...opts,
@@ -73,7 +87,7 @@ const API = (() => {
     return new WebSocket(`${proto}://${location.host}/ws/progress/${encodeURIComponent(taskId)}`);
   }
 
-  return { get, postJSON, postForm, downloadUrl, wsProgress };
+  return { get, postJSON, postForm, downloadUrl, wsProgress, setSessionId };
 })();
 
 /* ============================================================

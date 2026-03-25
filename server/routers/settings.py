@@ -31,14 +31,15 @@ def _validate_session_id(sid: str) -> str:
     return sid
 
 
-def _set_session_cookie(response: Response, sid: str) -> None:
+def _set_session_cookie(response: Response, sid: str, request: Request | None = None) -> None:
     """Set the session cookie with secure defaults for the current scheme."""
+    is_https = request is not None and request.url.scheme == "https"
     response.set_cookie(
         key="session_id",
         value=sid,
         httponly=True,
         samesite="lax",
-        secure=True,
+        secure=is_https,
     )
 
 
@@ -94,13 +95,14 @@ async def update_settings(
         session_store[sid]["google_api_key"] = body.google_api_key
 
     # Set cookie so the client remembers the session
-    _set_session_cookie(response, sid)
+    _set_session_cookie(response, sid, request)
 
     data = session_store[sid]
     logger.info("Session %s settings updated", sid[:8])
     return UserSettingsResponse(
         deepl_api_key=_mask_key(data.get("deepl_api_key")),
         google_api_key=_mask_key(data.get("google_api_key")),
+        session_id=sid,
     )
 
 
@@ -119,10 +121,11 @@ async def get_settings(
     sid, is_new = _resolve_session_id(x_session_id, session_id)
 
     if is_new:
-        _set_session_cookie(response, sid)
+        _set_session_cookie(response, sid, request)
 
     data = session_store.get(sid, {})
     return UserSettingsResponse(
         deepl_api_key=_mask_key(data.get("deepl_api_key")),
         google_api_key=_mask_key(data.get("google_api_key")),
+        session_id=sid,
     )

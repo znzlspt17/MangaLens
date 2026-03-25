@@ -12,6 +12,9 @@ const Settings = (() => {
     document.getElementById('modal-close').addEventListener('click', closeModal);
     document.getElementById('modal-cancel').addEventListener('click', closeModal);
 
+    // Banner "설정 열기" 버튼
+    document.getElementById('banner-settings-btn')?.addEventListener('click', openModal);
+
     // Close on overlay click
     document.getElementById('settings-modal').addEventListener('click', (e) => {
       if (e.target === e.currentTarget) closeModal();
@@ -38,6 +41,9 @@ const Settings = (() => {
         }
       });
     });
+
+    // 초기 API 키 배너 확인
+    checkAndShowBanner();
   }
 
   /* --- Open modal ------------------------------------------ */
@@ -47,6 +53,7 @@ const Settings = (() => {
     // Load current settings
     try {
       const data = await API.get('/settings');
+      if (data.session_id) API.setSessionId(data.session_id);
       el('deepl-status').textContent = data.deepl_api_key ? `저장됨: ${data.deepl_api_key}` : '설정되지 않음';
       el('google-status').textContent = data.google_api_key ? `저장됨: ${data.google_api_key}` : '설정되지 않음';
     } catch {
@@ -61,9 +68,7 @@ const Settings = (() => {
   /* --- Close modal ----------------------------------------- */
   function closeModal() {
     document.getElementById('settings-modal').classList.remove('active');
-    // Clear inputs
-    el('deepl-key').value = '';
-    el('google-key').value = '';
+    // 입력값 유지 — 취소 시 미완성 입력 유실 방지
   }
 
   /* --- Save settings --------------------------------------- */
@@ -83,13 +88,33 @@ const Settings = (() => {
       if (googleKey) body.google_api_key = googleKey;
       const data = await API.postJSON('/settings', body);
 
+      // session_id를 localStorage에 저장하여 이후 요청에 X-Session-Id 헤더로 활용
+      if (data.session_id) API.setSessionId(data.session_id);
+
       el('deepl-status').textContent = data.deepl_api_key ? `저장됨: ${data.deepl_api_key}` : '설정되지 않음';
       el('google-status').textContent = data.google_api_key ? `저장됨: ${data.google_api_key}` : '설정되지 않음';
 
       Toast.success('API 키가 저장되었습니다');
+      _setBanner(false);
       closeModal();
     } catch (err) {
       Toast.error(err.message);
+    }
+  }
+
+  /* --- Banner --------------------------------------------- */
+  function _setBanner(show) {
+    const banner = document.getElementById('api-key-banner');
+    if (banner) banner.style.display = show ? '' : 'none';
+  }
+
+  async function checkAndShowBanner() {
+    try {
+      const data = await API.get('/settings');
+      if (data.session_id) API.setSessionId(data.session_id);
+      _setBanner(!(data.deepl_api_key || data.google_api_key));
+    } catch {
+      _setBanner(true);
     }
   }
 
@@ -106,5 +131,5 @@ const Settings = (() => {
     }
   }
 
-  return { init };
+  return { init, checkAndShowBanner };
 })();

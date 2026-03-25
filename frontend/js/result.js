@@ -45,6 +45,10 @@ const Result = (() => {
     // Download button visibility
     el('download-btn').style.display = (status === 'failed') ? 'none' : '';
 
+    // Retry button — 실패시만 표시
+    const retryBtn = el('retry-btn');
+    if (retryBtn) retryBtn.style.display = (status === 'failed') ? '' : 'none';
+
     // Comparison viewer
     const viewer = el('comparison-viewer');
     const unavailable = el('comparison-unavailable');
@@ -163,14 +167,33 @@ const Result = (() => {
 
   /* --- Init ------------------------------------------------ */
   function init() {
-    el('download-btn').addEventListener('click', () => {
+    el('download-btn').addEventListener('click', async () => {
       if (!lastTaskId) return;
-      const a = document.createElement('a');
-      a.href = API.downloadUrl(`/result/${encodeURIComponent(lastTaskId)}`);
-      a.download = '';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const btn = el('download-btn');
+      btn.disabled = true;
+      btn.textContent = '다운로드 중…';
+      try {
+        const a = document.createElement('a');
+        a.href = API.downloadUrl(`/result/${encodeURIComponent(lastTaskId)}`);
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        Toast.success('다운로드가 시작되었습니다');
+      } catch {
+        Toast.error('다운로드에 실패했습니다');
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '다운로드';
+        }, 1500);
+      }
+    });
+
+    el('retry-btn')?.addEventListener('click', () => {
+      Progress.stop();
+      Upload.reset();
+      App.showSection('upload');
     });
 
     el('new-translate-btn').addEventListener('click', () => {

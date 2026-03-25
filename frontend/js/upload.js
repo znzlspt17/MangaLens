@@ -8,6 +8,7 @@ const Upload = (() => {
 
   let selectedFiles = []; // Array of File objects
   let lastOriginalFile = null;
+  let _serverReady = false;
 
   /* --- DOM refs (lazy, cached after first call) ------------- */
   let _els = null;
@@ -169,7 +170,26 @@ const Upload = (() => {
 
   /* --- Helpers --------------------------------------------- */
   function updateUploadBtn() {
-    els().uploadBtn.disabled = selectedFiles.length === 0;
+    const btn = els().uploadBtn;
+    const count = selectedFiles.length;
+    if (count === 0) {
+      btn.textContent = '번역 시작';
+      btn.disabled = true;
+      btn.title = '';
+    } else if (!_serverReady) {
+      btn.textContent = count > 1 ? `번역 시작 (${count}장)` : '번역 시작';
+      btn.disabled = true;
+      btn.title = '서버 준비 중… 잠시 후 다시 시도하세요';
+    } else {
+      btn.textContent = count > 1 ? `번역 시작 (${count}장)` : '번역 시작';
+      btn.disabled = false;
+      btn.title = '';
+    }
+  }
+
+  function setServerReady(ready) {
+    _serverReady = ready;
+    updateUploadBtn();
   }
 
   function formatSize(bytes) {
@@ -180,5 +200,5 @@ const Upload = (() => {
 
   function getOriginalFile() { return lastOriginalFile; }
 
-  return { init, reset, getOriginalFile };
+  return { init, reset, getOriginalFile, setServerReady };
 })();

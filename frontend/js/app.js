@@ -11,6 +11,19 @@ const App = (() => {
       const el = document.getElementById(`${s}-section`);
       if (el) el.classList.toggle('active', s === name);
     });
+    _updateSteps(name);
+  }
+
+  /* --- Step indicator -------------------------------------- */
+  const _stepMap = { upload: 1, progress: 2, result: 3 };
+  function _updateSteps(section) {
+    const current = _stepMap[section] || 1;
+    document.querySelectorAll('.step').forEach((el) => {
+      const step = parseInt(el.dataset.step, 10);
+      el.classList.remove('step--active', 'step--done');
+      if (step === current) el.classList.add('step--active');
+      else if (step < current) el.classList.add('step--done');
+    });
   }
 
   /* --- Theme toggle ---------------------------------------- */
@@ -52,13 +65,16 @@ const App = (() => {
         dot.className = 'status-dot status-dot--ready';
         const gpuName = data.gpu_info?.gpu_name || '';
         label.textContent = gpuName ? `Ready · ${gpuName}` : 'Ready';
+        Upload.setServerReady(true);
       } else {
         dot.className = 'status-dot status-dot--not-ready';
         label.textContent = '모델 로딩 중…';
+        Upload.setServerReady(false);
       }
     } catch {
       dot.className = 'status-dot status-dot--not-ready';
       label.textContent = '서버 연결 실패';
+      Upload.setServerReady(false);
     }
   }
 

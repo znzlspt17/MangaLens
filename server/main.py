@@ -100,12 +100,12 @@ async def lifespan(app: FastAPI):
                 # 더미 추론 (PLAN.md §17)
                 try:
                     if name == "BubbleDetector":
-                        instance.detect(_dummy_img)
+                        await instance.detect(_dummy_img)
                     elif name == "Preprocessor":
-                        instance.crop_and_upscale(_dummy_img, {"x": 0, "y": 0, "w": 64, "h": 64})
+                        await instance.crop_and_upscale(_dummy_img, {"x": 0, "y": 0, "w": 64, "h": 64})
                     elif name == "TextEraser":
                         _dummy_mask = np.zeros((128, 128), dtype=np.uint8)
-                        instance.erase(_dummy_img, _dummy_mask)
+                        await instance.erase(_dummy_img, _dummy_mask)
                     # OCREngine/TextRenderer — 로드만으로 충분
                     logger.info("  %s warm-up inference done", name)
                 except Exception:
