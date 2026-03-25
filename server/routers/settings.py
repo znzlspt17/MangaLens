@@ -13,7 +13,7 @@ from server.utils.logger import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api", tags=["settings"])
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_VALID_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # ---------------------------------------------------------------------------
 # In-memory session store (lost on server restart — by design)
@@ -24,9 +24,20 @@ session_store: dict[str, dict[str, str]] = {}
 
 def _validate_session_id(sid: str) -> str:
     """Validate a client-provided session ID before using it as a store key."""
-    if not _SESSION_ID_RE.fullmatch(sid):
+    if not _VALID_SESSION_ID_RE.fullmatch(sid):
         raise HTTPException(status_code=400, detail="Invalid session ID.")
     return sid
+
+
+def _set_session_cookie(response: Response, sid: str, request: Request) -> None:
+    """Set the session cookie with secure defaults for the current scheme."""
+    response.set_cookie(
+        key="session_id",
+        value=sid,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
 
 
 def _resolve_session_id(
@@ -81,13 +92,7 @@ async def update_settings(
         session_store[sid]["google_api_key"] = body.google_api_key
 
     # Set cookie so the client remembers the session
-    response.set_cookie(
-        key="session_id",
-        value=sid,
-        httponly=True,
-        samesite="lax",
-        secure=request.url.scheme == "https",
-    )
+    _set_session_cookie(response, sid, request)
 
     data = session_store[sid]
     logger.info("Session %s settings updated", sid[:8])
@@ -112,13 +117,7 @@ async def get_settings(
     sid, is_new = _resolve_session_id(x_session_id, session_id)
 
     if is_new:
-        response.set_cookie(
-            key="session_id",
-            value=sid,
-            httponly=True,
-            samesite="lax",
-            secure=request.url.scheme == "https",
-        )
+        _set_session_cookie(response, sid, request)
 
     data = session_store.get(sid, {})
     return UserSettingsResponse(
