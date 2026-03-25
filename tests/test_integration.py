@@ -175,12 +175,18 @@ class TestSettingsEndpoints:
         assert resp_b.json()["deepl_api_key"] is None
         assert resp_b.json()["google_api_key"] is not None
 
-    async def test_invalid_session_id_rejected(self, client: httpx.AsyncClient):
+    @pytest.mark.parametrize(
+        "session_id",
+        ["bad session id", "sess/id", "sess$id", "x" * 129],
+    )
+    async def test_invalid_session_id_rejected(
+        self, client: httpx.AsyncClient, session_id: str
+    ):
         """Invalid session identifiers are rejected before creating session state."""
         resp = await client.post(
             "/api/settings",
             json={"deepl_api_key": "dl-1234567890abcdef"},
-            headers={"X-Session-Id": "bad session id"},
+            headers={"X-Session-Id": session_id},
         )
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Invalid session ID."
@@ -193,6 +199,22 @@ class TestSettingsEndpoints:
             headers={"X-Session-Id": "sess-oversized"},
         )
         assert resp.status_code == 422
+
+    async def test_forwarded_https_sets_secure_session_cookie(
+        self, client: httpx.AsyncClient
+    ):
+        """Reverse-proxy HTTPS headers should still produce a secure cookie."""
+        resp = await client.post(
+            "/api/settings",
+            json={"deepl_api_key": "dl-1234567890abcdef"},
+            headers={
+                "X-Session-Id": "sess-proxy",
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        assert resp.status_code == 200
+        cookie = resp.headers.get("set-cookie", "")
+        assert "Secure" in cookie
 
 
 class TestDeploymentSafetyConfig:

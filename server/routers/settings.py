@@ -31,12 +31,14 @@ def _validate_session_id(sid: str) -> str:
 
 def _set_session_cookie(response: Response, sid: str, request: Request) -> None:
     """Set the session cookie with secure defaults for the current scheme."""
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    is_secure = request.url.scheme == "https" or forwarded_proto.split(",")[0].strip().lower() == "https"
     response.set_cookie(
         key="session_id",
         value=sid,
         httponly=True,
         samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=is_secure,
     )
 
 
