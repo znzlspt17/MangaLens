@@ -11,6 +11,47 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def remove_furigana(image: np.ndarray) -> np.ndarray:
+    """Remove furigana (ruby text) from a bubble crop image before OCR.
+
+    Furigana characters are visually small — typically less than 60% of the
+    median glyph height in the same region.  By filtering connected components
+    below that threshold we mask them out with the background colour (white)
+    without touching okurigana or regular hiragana words, which share the same
+    character size as kanji.
+
+    Args:
+        image: BGR crop of a single bubble (already upscaled).
+
+    Returns:
+        Copy of the image with furigana regions replaced by white pixels.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+
+    if n_labels <= 1:
+        return image  # no components found
+
+    # Exclude background (label 0); collect heights of all glyphs
+    heights = stats[1:, cv2.CC_STAT_HEIGHT]
+    if len(heights) == 0:
+        return image
+
+    median_h = float(np.median(heights))
+    threshold_h = median_h * 0.6  # glyphs smaller than this are furigana candidates
+
+    result = image.copy()
+    for label_idx in range(1, n_labels):
+        if stats[label_idx, cv2.CC_STAT_HEIGHT] < threshold_h:
+            # Paint furigana region white (background)
+            component_mask = labels == label_idx
+            result[component_mask] = (255, 255, 255)
+
+    return result
+
+
 def _patch_basicsr() -> None:
     """Patch basicsr's broken torchvision import at runtime if needed."""
     try:
@@ -141,9 +182,10 @@ class Preprocessor:
             upsampler = self._upsampler_x4 if scale == 4 else self._upsampler_x2
             with torch.no_grad():
                 output, _ = upsampler.enhance(crop, outscale=scale)
-            return output
+            return remove_furigana(output)
 
-        return cv2.resize(
+        upscaled = cv2.resize(
             crop, None, fx=scale, fy=scale,
             interpolation=cv2.INTER_CUBIC,
         )
+        return remove_furigana(upscaled)

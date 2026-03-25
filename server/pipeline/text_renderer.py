@@ -86,7 +86,7 @@ class TextRenderer:
         text: str,
         bbox: tuple[int, int, int, int],
         text_direction: str = "horizontal",
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, int]:
         """Render translated text onto the bubble image.
 
         Args:
@@ -96,11 +96,11 @@ class TextRenderer:
             text_direction: ``"vertical"`` or ``"horizontal"``.
 
         Returns:
-            RGBA numpy array (H, W, 4) with rendered text.
+            Tuple of (RGBA numpy array (H, W, 4) with rendered text, font_size used).
         """
         if not text or not text.strip():
             h, w = bubble_image.shape[:2]
-            return np.zeros((h, w, 4), dtype=np.uint8)
+            return np.zeros((h, w, 4), dtype=np.uint8), 0
 
         _, _, bw, bh = bbox
         usable_w = max(bw - _PADDING * 2, 1)
@@ -126,7 +126,7 @@ class TextRenderer:
             lines = self._wrap_text(text, font, usable_w)
             self._draw_horizontal(draw, font, lines, usable_w, usable_h, font_size)
 
-        return np.array(overlay, dtype=np.uint8)
+        return np.array(overlay, dtype=np.uint8), font_size
 
     def _draw_horizontal(
         self,
@@ -165,12 +165,23 @@ class TextRenderer:
         font_size: int,
     ) -> None:
         """Draw text vertically: columns right-to-left, 1 char per cell."""
-        chars_per_col = max(usable_h // int(font_size * _LINE_HEIGHT_RATIO), 1)
+        col_width = int(font_size * _LINE_HEIGHT_RATIO)
+        line_height = col_width
+
+        # How many columns actually fit in usable_w
+        max_cols = max(1, usable_w // col_width)
+        # Adapt chars_per_col so all text is distributed across available columns
+        import math
+        chars_per_col = max(usable_h // line_height, 1)
+        needed_cols = math.ceil(len(text) / chars_per_col)
+        if needed_cols > max_cols:
+            # Increase chars per column to fit within max_cols
+            chars_per_col = math.ceil(len(text) / max_cols)
+
         columns: list[str] = []
         for i in range(0, len(text), chars_per_col):
             columns.append(text[i : i + chars_per_col])
 
-        col_width = int(font_size * _LINE_HEIGHT_RATIO)
         total_cols_width = col_width * len(columns)
         # Right-to-left column order: first column on the right
         x_start = _PADDING + min(usable_w, total_cols_width) - col_width

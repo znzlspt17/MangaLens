@@ -71,3 +71,13 @@
 - **결정**: `https://download.pytorch.org/whl/cu128` 인덱스 사용
 - **근거**: 운영 환경 NVIDIA RTX 4090 + CUDA 12.8 (driver 590.48.01) 최적 빌드
 - **설정**: `pyproject.toml` `[tool.uv.sources]`에서 torch, torchvision에 명시적 인덱스 지정
+
+---
+
+## D-009: 후리가나 제거 — OCR 이전 이미지 레벨 처리
+
+- **결정**: OCR 전(업스케일 직후) connected component 높이 필터링으로 후리가나 마스킹
+- **근거**: OCR 텍스트 레벨에서는 후리가나와 오쿠리가나를 구분 불가 (예: `走はしる` → `は・し`가 후리가나인지 가나 단어인지 판별 불가). 이미지 레벨에서는 후리가나가 시각적으로 본문 글자 크기의 절반 이하임을 이용 가능
+- **구현**: `preprocessor.py::remove_furigana()` — 글리프 높이 중앙값의 60% 미만 connected component를 흰색으로 마스킹
+- **보존**: 오쿠리가나(`走る`의 `る`)는 본문과 동일한 크기이므로 영향 없음
+- **위치**: `Preprocessor.crop_and_upscale()` 반환 직전에 적용 (Real-ESRGAN 및 cv2 fallback 양쪽)

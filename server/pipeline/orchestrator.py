@@ -244,12 +244,13 @@ async def run_pipeline(
         if ctx.skipped:
             continue
         text = ctx.translated_text or (ctx.ocr.text if ctx.ocr else "")
-        rendered = await renderer.render(
+        rendered, font_size = await renderer.render(
             erased_image,
             text,
             ctx.info.bbox,
             ctx.info.text_direction,
         )
+        ctx.font_size_used = font_size
         rendered_bubbles.append(
             RenderedBubble(bbox=ctx.info.bbox, image=rendered)
         )

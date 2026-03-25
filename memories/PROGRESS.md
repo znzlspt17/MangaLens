@@ -52,6 +52,20 @@
 | 9 | `frontend/css/style.css` | step-bar, api-key-banner, hero, upload-card, 배경 orb 애니메이션, 헤더 glassmorphism |
 | 10 | `frontend/css/themes.css` | 다크/라이트 CSS 변수 전면 정비 (`--gradient-text`, `--header-bg`, `--shadow-md` 등) |
 
+#### 2026-03-25 (오늘) — 2차 작업
+
+##### 버그 수정
+| # | 파일 | 수정 내용 |
+|---|------|-----------|
+| 11 | `server/pipeline/text_renderer.py` | `render()` 반환 타입 `np.ndarray` → `tuple[np.ndarray, int]` — `font_size_used` 항상 0으로 기록되던 문제 수정 |
+| 12 | `server/pipeline/orchestrator.py` | `renderer.render()` 튜플 언패킹 + `ctx.font_size_used` 업데이트 연결 |
+| 13 | `server/pipeline/text_renderer.py` | `_draw_vertical()` — `max_cols = usable_w // col_width` 기준 `chars_per_col` 적응형 계산, 마지막 컬럼 글자 누락(잘림) 버그 수정 |
+
+##### 기능 추가
+| # | 파일 | 추가 내용 |
+|---|------|-----------|
+| 11 | `server/pipeline/preprocessor.py` | `remove_furigana()` — connected component 높이 중앙값 60% 미만 글리프를 후리가나로 판단해 흰색 마스킹, 업스케일 직후 OCR 전 자동 적용 |
+
 ---
 
 #### PM 프로젝트 전체 검토
