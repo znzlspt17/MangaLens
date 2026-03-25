@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+MAX_USER_API_KEY_LENGTH = 512
+
 
 # ---------------------------------------------------------------------------
 # Health
@@ -65,8 +67,8 @@ class TranslationResult(BaseModel):
 
 class UserSettings(BaseModel):
     """Input model for POST /api/settings."""
-    deepl_api_key: str | None = Field(default=None, max_length=512)
-    google_api_key: str | None = Field(default=None, max_length=512)
+    deepl_api_key: str | None = Field(default=None, max_length=MAX_USER_API_KEY_LENGTH)
+    google_api_key: str | None = Field(default=None, max_length=MAX_USER_API_KEY_LENGTH)
 
 
 class UserSettingsResponse(BaseModel):

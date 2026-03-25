@@ -24,6 +24,7 @@ import pytest
 from httpx._transports.asgi import ASGITransport
 from PIL import Image
 
+from server.schemas.models import MAX_USER_API_KEY_LENGTH
 from server.state import task_store
 
 
@@ -186,10 +187,9 @@ class TestSettingsEndpoints:
 
     async def test_oversized_api_key_rejected(self, client: httpx.AsyncClient):
         """Oversized API keys are rejected by request validation."""
-        max_api_key_length = 512
         resp = await client.post(
             "/api/settings",
-            json={"deepl_api_key": "x" * (max_api_key_length + 1)},
+            json={"deepl_api_key": "x" * (MAX_USER_API_KEY_LENGTH + 1)},
             headers={"X-Session-Id": "sess-oversized"},
         )
         assert resp.status_code == 422
