@@ -50,7 +50,7 @@ cp .env.example .env
 uv run python -m server.main
 ```
 
-서버가 `http://localhost:8000` 에서 시작됩니다.
+서버가 `http://localhost:20399` 에서 시작됩니다.
 
 ## API 엔드포인트
 
@@ -71,22 +71,22 @@ uv run python -m server.main
 ### 단일 이미지 번역
 
 ```bash
-curl -X POST http://localhost:8000/api/upload \
+curl -X POST http://localhost:20399/api/upload \
   -F "file=@manga_page.jpg"
 
 # 응답: {"task_id": "abc123...", "status": "queued"}
 
 # 상태 확인
-curl http://localhost:8000/api/status/abc123...
+curl http://localhost:20399/api/status/abc123...
 
 # 결과 다운로드
-curl -o translated.png http://localhost:8000/api/result/abc123...
+curl -o translated.png http://localhost:20399/api/result/abc123...
 ```
 
 ### 사용자 API 키 설정
 
 ```bash
-curl -X POST http://localhost:8000/api/settings \
+curl -X POST http://localhost:20399/api/settings \
   -H "Content-Type: application/json" \
   -H "X-Session-Id: my-session" \
   -d '{"deepl_api_key": "your-key-here"}'

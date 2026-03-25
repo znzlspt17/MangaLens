@@ -235,7 +235,7 @@ if __name__ == "__main__":
     import uvicorn
 
     _host = os.environ.get("HOST", "0.0.0.0")
-    _port = int(os.environ.get("PORT", "8000"))
+    _port = int(os.environ.get("PORT", "20399"))
     _reload = os.environ.get("DEV", "").lower() in ("1", "true")
     uvicorn.run(
         "server.main:app",

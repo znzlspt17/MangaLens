@@ -3,7 +3,7 @@ REM MangaLens — Windows 원클릭 실행 스크립트 (WSL2 경유)
 REM 사용법: start.bat [PORT]
 setlocal
 
-set "PORT=8000"
+set "PORT=20399"
 if not "%~1"=="" set "PORT=%~1"
 
 REM WSL에서 start.sh 실행

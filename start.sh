@@ -11,7 +11,7 @@ warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 error()   { echo -e "${RED}[✗]${NC} $*" >&2; }
 
 # ── 옵션 파싱 ─────────────────────────────────────────────────────────────
-PORT=8000
+PORT=20399
 HOST=0.0.0.0
 SKIP_DOWNLOAD=0
 DEV_MODE=0
@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
     --dev)         DEV_MODE=1;       shift ;;
     -h|--help)
       echo "사용법: $0 [--port PORT] [--host HOST] [--skip-download] [--dev]"
-      echo "  --port PORT        서버 포트 (기본: 8000)"
+      echo "  --port PORT        서버 포트 (기본: 20399)"
       echo "  --host HOST        바인드 주소 (기본: 0.0.0.0)"
       echo "  --skip-download    모델/폰트 다운로드 건너뜀"
       echo "  --dev              uvicorn --reload 개발 모드"
