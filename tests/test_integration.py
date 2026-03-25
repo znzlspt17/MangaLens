@@ -174,6 +174,44 @@ class TestSettingsEndpoints:
         assert resp_b.json()["deepl_api_key"] is None
         assert resp_b.json()["google_api_key"] is not None
 
+    async def test_invalid_session_id_rejected(self, client: httpx.AsyncClient):
+        """Invalid session identifiers are rejected before creating session state."""
+        resp = await client.post(
+            "/api/settings",
+            json={"deepl_api_key": "dl-1234567890abcdef"},
+            headers={"X-Session-Id": "bad session id"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid session ID."
+
+    async def test_oversized_api_key_rejected(self, client: httpx.AsyncClient):
+        """Oversized API keys are rejected by request validation."""
+        resp = await client.post(
+            "/api/settings",
+            json={"deepl_api_key": "x" * 513},
+            headers={"X-Session-Id": "sess-oversized"},
+        )
+        assert resp.status_code == 422
+
+
+class TestDeploymentSafetyConfig:
+    """Deployment-related configuration safety checks."""
+
+    def test_cors_credentials_only_for_explicit_origins(self):
+        """Credentialed CORS is only enabled for explicit origin lists."""
+        from server.config import Settings
+
+        blank = Settings(allowed_origins="")
+        explicit = Settings(allowed_origins="https://mangalens.example.com")
+        wildcard = Settings(allowed_origins="*")
+
+        assert blank.get_allowed_origins() == []
+        assert blank.allow_cors_credentials() is False
+        assert explicit.get_allowed_origins() == ["https://mangalens.example.com"]
+        assert explicit.allow_cors_credentials() is True
+        assert wildcard.get_allowed_origins() == ["*"]
+        assert wildcard.allow_cors_credentials() is False
+
 
 # ===================================================================
 # 2. TestStatusEndpoint

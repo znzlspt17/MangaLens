@@ -15,13 +15,6 @@ const API = (() => {
     const url = `${BASE}${path}`;
     const headers = { ...(opts.headers || {}) };
 
-    // Attach session cookie automatically (browser handles cookie header)
-    // Attach API key headers if stored
-    const deeplKey = sessionStorage.getItem('mangalens_deepl_key');
-    const googleKey = sessionStorage.getItem('mangalens_google_key');
-    if (deeplKey) headers['X-DeepL-Key'] = deeplKey;
-    if (googleKey) headers['X-Google-Key'] = googleKey;
-
     const res = await fetch(url, {
       ...opts,
       headers,

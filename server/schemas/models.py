@@ -65,8 +65,8 @@ class TranslationResult(BaseModel):
 
 class UserSettings(BaseModel):
     """Input model for POST /api/settings."""
-    deepl_api_key: str | None = None
-    google_api_key: str | None = None
+    deepl_api_key: str | None = Field(default=None, max_length=512)
+    google_api_key: str | None = Field(default=None, max_length=512)
 
 
 class UserSettingsResponse(BaseModel):

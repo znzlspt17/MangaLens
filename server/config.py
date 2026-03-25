@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     max_concurrent_tasks: int = 1
     result_ttl_seconds: int = 3600  # 1 hour
     delete_after_download: bool = False
-    allowed_origins: str = "*"  # comma-separated
+    allowed_origins: str = ""  # comma-separated
     skip_warmup: bool = False
 
     # Paths
@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     def get_allowed_origins(self) -> list[str]:
         """Parse ALLOWED_ORIGINS into a list of origin strings."""
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    def allow_cors_credentials(self) -> bool:
+        """Allow credentialed CORS only for explicit origins."""
+        origins = self.get_allowed_origins()
+        return bool(origins) and "*" not in origins
 
 
 settings = Settings()

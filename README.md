@@ -168,7 +168,14 @@ server/
 | `MAX_CONCURRENT_TASKS` | `1` | 동시 파이프라인 수 |
 | `RESULT_TTL_SECONDS` | `3600` | 결과 보존 시간 (1시간) |
 | `SKIP_WARMUP` | `false` | 모델 워밍업 건너뛰기 |
-| `ALLOWED_ORIGINS` | `*` | CORS 허용 출처 |
+| `ALLOWED_ORIGINS` | (비어 있음) | CORS 허용 출처. 라이브 배포 시 명시적 도메인만 설정 |
+
+## 라이브 배포 전 점검
+
+- 현재 기본 설정은 **same-origin 배포**를 기준으로 합니다. 외부 프론트엔드에서 API를 호출해야 할 때만 `ALLOWED_ORIGINS` 에 정확한 도메인을 설정하세요.
+- 브라우저 API 키는 서버 세션(HttpOnly cookie 기반)에만 저장되며, 프론트엔드 `sessionStorage` 에는 저장하지 않습니다.
+- `task_store`, `session_store` 는 메모리 기반이라 서버 재시작 시 초기화됩니다. 따라서 **단일 인스턴스 배포** 또는 외부 상태 저장소 도입 전까지는 수평 확장에 적합하지 않습니다.
+- 공개 인터넷에 노출할 경우, 리버스 프록시/로드밸런서에서 HTTPS 강제, 요청 크기 제한, 요청 속도 제한을 함께 설정하는 것을 권장합니다.
 
 ## 라이선스
 

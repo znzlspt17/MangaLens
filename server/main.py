@@ -148,13 +148,22 @@ app = FastAPI(
 )
 
 # CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.get_allowed_origins(),
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "X-DeepL-Key", "X-Google-Key", "X-Session-Id"],
-)
+_allowed_origins = settings.get_allowed_origins()
+if _allowed_origins:
+    if "*" in _allowed_origins:
+        logger.warning(
+            "ALLOWED_ORIGINS contains '*'; credentialed CORS is disabled. "
+            "Set explicit origins before public deployment."
+        )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_allowed_origins,
+        allow_credentials=settings.allow_cors_credentials(),
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "X-DeepL-Key", "X-Google-Key", "X-Session-Id"],
+    )
+else:
+    logger.info("CORS middleware disabled because ALLOWED_ORIGINS is not configured")
 
 # ---------------------------------------------------------------------------
 # Routers

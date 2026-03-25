@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 
-from fastapi import APIRouter, Cookie, Header, Response
+from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response
 
 from server.schemas.models import UserSettings, UserSettingsResponse
 from server.utils.logger import get_logger
@@ -12,12 +13,20 @@ from server.utils.logger import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api", tags=["settings"])
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # ---------------------------------------------------------------------------
 # In-memory session store (lost on server restart — by design)
 # ---------------------------------------------------------------------------
 # { session_id: { "deepl_api_key": "...", "google_api_key": "..." } }
 session_store: dict[str, dict[str, str]] = {}
+
+
+def _validate_session_id(sid: str) -> str:
+    """Validate a client-provided session ID before using it as a store key."""
+    if not _SESSION_ID_RE.fullmatch(sid):
+        raise HTTPException(status_code=400, detail="Invalid session ID.")
+    return sid
 
 
 def _resolve_session_id(
@@ -29,6 +38,8 @@ def _resolve_session_id(
     Priority: X-Session-Id header > cookie > generate new UUID.
     """
     sid = x_session_id or session_id_cookie
+    if sid:
+        sid = _validate_session_id(sid)
     if sid and sid in session_store:
         return sid, False
     if sid:
@@ -55,6 +66,7 @@ def _mask_key(key: str | None) -> str | None:
 
 @router.post("/settings", response_model=UserSettingsResponse)
 async def update_settings(
+    request: Request,
     body: UserSettings,
     response: Response,
     x_session_id: str | None = Header(None, alias="X-Session-Id"),
@@ -69,7 +81,13 @@ async def update_settings(
         session_store[sid]["google_api_key"] = body.google_api_key
 
     # Set cookie so the client remembers the session
-    response.set_cookie(key="session_id", value=sid, httponly=True, samesite="lax")
+    response.set_cookie(
+        key="session_id",
+        value=sid,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
 
     data = session_store[sid]
     logger.info("Session %s settings updated", sid[:8])
@@ -85,6 +103,7 @@ async def update_settings(
 
 @router.get("/settings", response_model=UserSettingsResponse)
 async def get_settings(
+    request: Request,
     response: Response,
     x_session_id: str | None = Header(None, alias="X-Session-Id"),
     session_id: str | None = Cookie(None, alias="session_id"),
@@ -93,7 +112,13 @@ async def get_settings(
     sid, is_new = _resolve_session_id(x_session_id, session_id)
 
     if is_new:
-        response.set_cookie(key="session_id", value=sid, httponly=True, samesite="lax")
+        response.set_cookie(
+            key="session_id",
+            value=sid,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+        )
 
     data = session_store.get(sid, {})
     return UserSettingsResponse(
