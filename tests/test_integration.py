@@ -200,34 +200,18 @@ class TestSettingsEndpoints:
         )
         assert resp.status_code == 422
 
-    async def test_forwarded_https_sets_secure_session_cookie(
+    async def test_settings_cookie_is_marked_secure(
         self, client: httpx.AsyncClient
     ):
-        """Reverse-proxy HTTPS headers should still produce a secure cookie."""
+        """Session cookies should always be marked Secure."""
         resp = await client.post(
             "/api/settings",
             json={"deepl_api_key": "dl-1234567890abcdef"},
-            headers={
-                "X-Session-Id": "sess-proxy",
-                "X-Forwarded-Proto": "https",
-            },
+            headers={"X-Session-Id": "sess-secure"},
         )
         assert resp.status_code == 200
         cookie = resp.headers.get("set-cookie", "")
         assert "Secure" in cookie
-
-    async def test_http_request_without_forwarded_https_keeps_cookie_non_secure(
-        self, client: httpx.AsyncClient
-    ):
-        """Plain HTTP requests should not mark the session cookie as Secure."""
-        resp = await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "dl-1234567890abcdef"},
-            headers={"X-Session-Id": "sess-http"},
-        )
-        assert resp.status_code == 200
-        cookie = resp.headers.get("set-cookie", "")
-        assert "Secure" not in cookie
 
 
 class TestDeploymentSafetyConfig:
