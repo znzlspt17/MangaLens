@@ -83,10 +83,6 @@ const Settings = (() => {
       if (googleKey) body.google_api_key = googleKey;
       const data = await API.postJSON('/settings', body);
 
-      // Store keys in sessionStorage for header injection
-      if (deeplKey) sessionStorage.setItem('mangalens_deepl_key', deeplKey);
-      if (googleKey) sessionStorage.setItem('mangalens_google_key', googleKey);
-
       el('deepl-status').textContent = data.deepl_api_key ? `저장됨: ${data.deepl_api_key}` : '설정되지 않음';
       el('google-status').textContent = data.google_api_key ? `저장됨: ${data.google_api_key}` : '설정되지 않음';
 

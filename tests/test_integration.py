@@ -24,6 +24,7 @@ import pytest
 from httpx._transports.asgi import ASGITransport
 from PIL import Image
 
+from server.schemas.models import MAX_USER_API_KEY_LENGTH
 from server.state import task_store
 
 
@@ -173,6 +174,75 @@ class TestSettingsEndpoints:
         resp_b = await client.get("/api/settings", headers={"X-Session-Id": "sess-B"})
         assert resp_b.json()["deepl_api_key"] is None
         assert resp_b.json()["google_api_key"] is not None
+
+    @pytest.mark.parametrize(
+        "session_id",
+        ["bad session id", "sess/id", "sess$id", "x" * 129],
+    )
+    async def test_invalid_session_id_rejected(
+        self, client: httpx.AsyncClient, session_id: str
+    ):
+        """Invalid session identifiers are rejected before creating session state."""
+        resp = await client.post(
+            "/api/settings",
+            json={"deepl_api_key": "dl-1234567890abcdef"},
+            headers={"X-Session-Id": session_id},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid session ID."
+
+    async def test_oversized_api_key_rejected(self, client: httpx.AsyncClient):
+        """Oversized API keys are rejected by request validation."""
+        resp = await client.post(
+            "/api/settings",
+            json={"deepl_api_key": "x" * (MAX_USER_API_KEY_LENGTH + 1)},
+            headers={"X-Session-Id": "sess-oversized"},
+        )
+        assert resp.status_code == 422
+
+    async def test_settings_cookie_uses_secure_flag_by_default(
+        self, client: httpx.AsyncClient
+    ):
+        """Deployment-safe default should always mark the session cookie Secure."""
+        resp = await client.post(
+            "/api/settings",
+            json={"deepl_api_key": "dl-1234567890abcdef"},
+            headers={"X-Session-Id": "sess-secure"},
+        )
+        assert resp.status_code == 200
+        cookie = resp.headers.get("set-cookie", "")
+        assert "Secure" in cookie
+
+
+class TestDeploymentSafetyConfig:
+    """Deployment-related configuration safety checks."""
+
+    def test_cors_credentials_only_for_explicit_origins(self):
+        """Credentialed CORS is only enabled for explicit origin lists."""
+        from server.config import Settings
+
+        blank = Settings(allowed_origins="")
+        explicit = Settings(allowed_origins="https://mangalens.example.com")
+        wildcard = Settings(allowed_origins="*")
+
+        assert blank.get_allowed_origins() == []
+        assert blank.allow_cors_credentials() is False
+        assert explicit.get_allowed_origins() == ["https://mangalens.example.com"]
+        assert explicit.allow_cors_credentials() is True
+        assert wildcard.get_allowed_origins() == ["*"]
+        assert wildcard.allow_cors_credentials() is False
+
+    async def test_default_app_does_not_emit_cors_headers(
+        self, client: httpx.AsyncClient
+    ):
+        """Default app config should stay same-origin without CORS headers."""
+        resp = await client.get(
+            "/api/health",
+            headers={"Origin": "https://mangalens.example.com"},
+        )
+        assert resp.status_code == 200
+        assert "access-control-allow-origin" not in resp.headers
+        assert "access-control-allow-credentials" not in resp.headers
 
 
 # ===================================================================
