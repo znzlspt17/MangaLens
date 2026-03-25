@@ -13,7 +13,7 @@ from server.utils.logger import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api", tags=["settings"])
-_VALID_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_VALID_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # ---------------------------------------------------------------------------
 # In-memory session store (lost on server restart — by design)
@@ -24,7 +24,7 @@ session_store: dict[str, dict[str, str]] = {}
 
 def _validate_session_id(sid: str) -> str:
     """Validate a client-provided session ID before using it as a store key."""
-    if not _VALID_SESSION_ID_RE.fullmatch(sid):
+    if not _VALID_SESSION_ID_PATTERN.fullmatch(sid):
         raise HTTPException(status_code=400, detail="Invalid session ID.")
     return sid
 

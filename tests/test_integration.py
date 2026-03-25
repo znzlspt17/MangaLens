@@ -186,9 +186,10 @@ class TestSettingsEndpoints:
 
     async def test_oversized_api_key_rejected(self, client: httpx.AsyncClient):
         """Oversized API keys are rejected by request validation."""
+        max_api_key_length = 512
         resp = await client.post(
             "/api/settings",
-            json={"deepl_api_key": "x" * 513},
+            json={"deepl_api_key": "x" * (max_api_key_length + 1)},
             headers={"X-Session-Id": "sess-oversized"},
         )
         assert resp.status_code == 422
