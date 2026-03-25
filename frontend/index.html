@@ -60,10 +60,37 @@
         </div>
       </div>
 
-      <!-- API Key Banner -->
-      <div class="api-key-banner" id="api-key-banner" role="alert" style="display:none">
-        <span>⚠️ 번역 API 키가 없습니다. 키 없이는 일본어 원문이 그대로 출력됩니다.</span>
-        <button type="button" class="api-key-banner__btn" id="banner-settings-btn">API 키 설정 →</button>
+      <!-- API Key Onboarding Guide -->
+      <div class="api-key-guide" id="api-key-guide" role="alert" style="display:none">
+        <div class="api-key-guide__header">
+          <span class="api-key-guide__icon">🔑</span>
+          <strong class="api-key-guide__title">번역 API 키가 필요합니다</strong>
+        </div>
+        <p class="api-key-guide__desc">MangaLens는 외부 번역 API를 사용합니다. <strong>API 키 없이는 번역이 되지 않으며</strong>, 원문(일본어)이 그대로 출력됩니다.</p>
+        <div class="api-key-guide__steps">
+          <div class="api-key-guide__step">
+            <span class="api-key-guide__step-num">1</span>
+            <div>
+              <strong>DeepL 가입 &amp; 키 발급</strong> <span class="api-key-guide__tag">무료</span>
+              <p><a href="https://www.deepl.com/pro-api" target="_blank" rel="noopener noreferrer">deepl.com/pro-api</a> → 무료 가입 → API 키 복사</p>
+            </div>
+          </div>
+          <div class="api-key-guide__step">
+            <span class="api-key-guide__step-num">2</span>
+            <div>
+              <strong>키 입력</strong>
+              <p>아래 버튼으로 설정 화면을 열고 API 키를 붙여넣으세요</p>
+            </div>
+          </div>
+          <div class="api-key-guide__step">
+            <span class="api-key-guide__step-num">3</span>
+            <div>
+              <strong>번역 시작!</strong>
+              <p>키 저장 후 이미지를 올리면 자동으로 번역됩니다</p>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="api-key-guide__btn" id="banner-settings-btn">⚙️ API 키 설정하기</button>
       </div>
 
       <!-- Upload Card (Manga Panel) -->
@@ -153,21 +180,23 @@
       <div class="modal__body">
         <!-- DeepL -->
         <div class="form-group">
-          <label class="form-label" for="deepl-key">DeepL API 키</label>
+          <label class="form-label" for="deepl-key">DeepL API 키 <span class="form-label__badge">권장</span></label>
           <div class="input-group">
             <input type="password" id="deepl-key" placeholder="DeepL API 키 입력" autocomplete="off" />
             <button type="button" class="toggle-vis" data-target="deepl-key" aria-label="키 표시/숨기기">👁</button>
           </div>
           <div class="form-hint" id="deepl-status"></div>
+          <div class="form-help">무료 플랜: 월 50만 자. <a href="https://www.deepl.com/pro-api" target="_blank" rel="noopener noreferrer">발급 받기 →</a></div>
         </div>
         <!-- Google -->
         <div class="form-group">
-          <label class="form-label" for="google-key">Google API 키</label>
+          <label class="form-label" for="google-key">Google API 키 <span class="form-label__tag">대체</span></label>
           <div class="input-group">
             <input type="password" id="google-key" placeholder="Google API 키 입력" autocomplete="off" />
             <button type="button" class="toggle-vis" data-target="google-key" aria-label="키 표시/숨기기">👁</button>
           </div>
           <div class="form-hint" id="google-status"></div>
+          <div class="form-help">DeepL을 사용할 수 없을 때 대체용. <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer">발급 받기 →</a></div>
         </div>
         <!-- GPU Info -->
         <div class="form-group">

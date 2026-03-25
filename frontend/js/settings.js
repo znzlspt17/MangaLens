@@ -95,27 +95,36 @@ const Settings = (() => {
       el('google-status').textContent = data.google_api_key ? `저장됨: ${data.google_api_key}` : '설정되지 않음';
 
       Toast.success('API 키가 저장되었습니다');
-      _setBanner(false);
+      _hasApiKey = true;
+      _setGuide(false);
       closeModal();
     } catch (err) {
       Toast.error(err.message);
     }
   }
 
-  /* --- Banner --------------------------------------------- */
-  function _setBanner(show) {
-    const banner = document.getElementById('api-key-banner');
-    if (banner) banner.style.display = show ? '' : 'none';
+  /* --- Onboarding Guide ----------------------------------- */
+  let _hasApiKey = false;
+
+  function _setGuide(show) {
+    const guide = document.getElementById('api-key-guide');
+    if (guide) guide.style.display = show ? '' : 'none';
   }
 
   async function checkAndShowBanner() {
     try {
       const data = await API.get('/settings');
       if (data.session_id) API.setSessionId(data.session_id);
-      _setBanner(!(data.deepl_api_key || data.google_api_key));
+      _hasApiKey = !!(data.deepl_api_key || data.google_api_key);
+      _setGuide(!_hasApiKey);
     } catch {
-      _setBanner(true);
+      _hasApiKey = false;
+      _setGuide(true);
     }
+  }
+
+  function hasApiKey() {
+    return _hasApiKey;
   }
 
   /* --- GPU info -------------------------------------------- */
@@ -131,5 +140,5 @@ const Settings = (() => {
     }
   }
 
-  return { init, checkAndShowBanner };
+  return { init, checkAndShowBanner, hasApiKey };
 })();

@@ -140,6 +140,20 @@ const Upload = (() => {
     const { uploadBtn } = els();
     uploadBtn.disabled = true;
 
+    // API 키 미설정 시 경고
+    if (!Settings.hasApiKey()) {
+      const ok = confirm(
+        '⚠️ 번역 API 키가 설정되지 않았습니다.\n\n'
+        + '키 없이 진행하면 일본어 원문이 그대로 출력됩니다.\n'
+        + '계속하시겠습니까?\n\n'
+        + '("취소" → 설정에서 API 키 입력)'
+      );
+      if (!ok) {
+        uploadBtn.disabled = false;
+        return;
+      }
+    }
+
     try {
       lastOriginalFile = selectedFiles.length === 1 ? selectedFiles[0] : null;
       let result;
