@@ -200,10 +200,10 @@ class TestSettingsEndpoints:
         )
         assert resp.status_code == 422
 
-    async def test_settings_cookie_is_marked_secure(
+    async def test_settings_cookie_uses_secure_flag_by_default(
         self, client: httpx.AsyncClient
     ):
-        """Session cookies should always be marked Secure."""
+        """Deployment-safe default should always mark the session cookie Secure."""
         resp = await client.post(
             "/api/settings",
             json={"deepl_api_key": "dl-1234567890abcdef"},
