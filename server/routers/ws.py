@@ -31,9 +31,11 @@ async def ws_progress(websocket: WebSocket, task_id: str) -> None:
     even when no change occurs, so the client can detect stale connections.
     """
     await websocket.accept()
+    logger.info("[ws] Client connected for task=%s", task_id)
 
     # Validate that the task exists
     if task_id not in task_store:
+        logger.warning("[ws] Task not found on connect: %s", task_id)
         await websocket.send_json({"error": "task_not_found", "task_id": task_id})
         await websocket.close(code=1008)
         return
@@ -55,9 +57,18 @@ async def ws_progress(websocket: WebSocket, task_id: str) -> None:
                 "completed_images": task.get("completed_images", 0),
                 "failed_images": task.get("failed_images", 0),
             }
-            await websocket.send_json(message)
+            try:
+                await websocket.send_json(message)
+            except Exception as exc:
+                logger.warning("[ws] send_json failed for task=%s: %s", task_id, exc)
+                return
 
             if message["status"] in _TERMINAL_STATUSES:
+                logger.info(
+                    "[ws] Terminal status for task=%s: %s (completed=%d, failed=%d)",
+                    task_id, message["status"],
+                    message.get("completed_images", 0), message.get("failed_images", 0),
+                )
                 await websocket.close(code=1000)
                 return
 
@@ -68,6 +79,9 @@ async def ws_progress(websocket: WebSocket, task_id: str) -> None:
                 pass  # heartbeat — loop and resend current state
 
     except WebSocketDisconnect:
-        logger.debug("WebSocket client disconnected for task %s", task_id)
+        logger.info("[ws] Client disconnected for task=%s", task_id)
+    except Exception:
+        logger.exception("[ws] Unexpected error for task=%s", task_id)
     finally:
         unsubscribe(task_id, notify_queue)
+        logger.debug("[ws] Unsubscribed from task=%s", task_id)

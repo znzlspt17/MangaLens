@@ -136,7 +136,7 @@ def _build_input_ids(text: str, source_lang: str = "JA", target_lang: str = "KO"
             {"role": "system", "content": system_msg},
             {"role": "user", "content": text},
         ]
-        encoded = _tokenizer.apply_chat_template(
+        result = _tokenizer.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
@@ -144,6 +144,12 @@ def _build_input_ids(text: str, source_lang: str = "JA", target_lang: str = "KO"
             truncation=True,
             max_length=1024,
         )
+        # apply_chat_template may return a BatchEncoding (dict-like) or a
+        # plain tensor depending on the transformers version.
+        if hasattr(result, "input_ids"):
+            encoded = result["input_ids"]
+        else:
+            encoded = result
     else:
         prompt = _PROMPT_TEMPLATE.format(src=src_name, tgt=tgt_name, text=text)
         encoded = _tokenizer(

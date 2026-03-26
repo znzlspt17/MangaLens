@@ -1,6 +1,6 @@
 # MangaLens — 진행 상황 추적
 
-> 최종 갱신: 2026-03-26 (Phase 13: 전체 이슈 수정 완료)
+> 최종 갱신: 2026-03-26 (Phase 14: 로깅 시스템 + 런타임 버그 수정)
 
 ---
 
@@ -131,6 +131,49 @@
 | Phase 11: P0–P2 버그 수정 스프린트 | ✅ |
 | Phase 12: 전체 코드 리뷰 (5개 담당 검토) | ✅ 검토 완료 |
 | Phase 13: 전체 이슈 수정 (26건 P0-P2) | ✅ 181 tests passed |
+| Phase 14: 로깅 시스템 + 런타임 버그 수정 | ✅ 181 tests passed |
+
+---
+
+## 2026-03-26 — Phase 14: 로깅 시스템 + 런타임 버그 수정
+
+### 배경
+번역 실행 시 "번역 실패" 발생. 로그가 부족하여 원인 파악 불가 → 프론트엔드+백엔드 전면 로깅 구축 후 런타임 버그 2건 발견·수정.
+
+### 로깅 시스템 구축 (14개 파일, +260/-39줄)
+
+#### 백엔드 로깅
+| # | 파일 | 추가 내용 |
+|---|------|-----------|
+| 1 | `server/utils/logger.py` | `RotatingFileHandler` 추가 — `logs/mangalens.log`, 10MB × 5 backups, UTF-8 |
+| 2 | `server/main.py` | HTTP 미들웨어 — `/api/*` 요청/응답 로깅 (method, path, status, latency) |
+| 3 | `server/routers/upload.py` | 파이프라인 라이프사이클 상세 로깅 — 큐, 세마포어 대기, 이미지별 처리시간, 실패 예외 |
+| 4 | `server/routers/ws.py` | WebSocket connect/disconnect/error, 터미널 상태 전송, `send_json` 실패 catch |
+| 5 | `server/routers/result.py` | 상태 조회, 다운로드 거부(409), 누락 파일 진단 (디렉토리 리스팅) |
+| 6 | `server/pipeline/orchestrator.py` | GPU fallback 경고, 번역 성공/실패, 마스크 소스 통계, CUDA cleanup 실패 로깅 |
+
+#### 프론트엔드 로깅
+| # | 파일 | 추가 내용 |
+|---|------|-----------|
+| 7 | `frontend/js/api.js` | `Logger` 모듈 (IIFE) — console + 200-entry 링 버퍼, `Logger.dump()` 진단용 |
+| 8 | `frontend/js/upload.js` | 파일 검증, 업로드 시작/성공/실패, 서버 준비 상태 |
+| 9 | `frontend/js/progress.js` | WebSocket 연결/메시지/종료/오류/재연결 |
+| 10 | `frontend/js/result.js` | 결과 표시, 다운로드 시작/실패 |
+| 11 | `frontend/js/app.js` | 헬스체크, 부팅 시퀀스 |
+
+#### 기타
+| # | 파일 | 추가 내용 |
+|---|------|-----------|
+| 12 | `.gitignore` | `logs/` 디렉토리 제외 |
+
+### 런타임 버그 수정
+| # | 파일 | 이슈 | 원인 | 수정 |
+|---|------|------|------|------|
+| 1 | `server/pipeline/preprocessor.py` | `NameError: name 'asyncio' is not defined` | Phase 13에서 `asyncio.to_thread()` 래핑 추가 시 `import asyncio` 누락 | `import asyncio` 추가 |
+| 2 | `server/pipeline/translator.py` | `AttributeError` on `encoded.shape[1]` | transformers 5.3.0의 `apply_chat_template(return_tensors="pt")`가 `BatchEncoding`(dict-like) 반환 — `.shape` 직접 접근 불가 | `hasattr(result, "input_ids")` 검사 후 `result["input_ids"]` 추출 |
+
+- **테스트 결과**: **181 passed**, 0 failed (기존 테스트 전체 통과)
+- **핵심 성과**: 로깅 시스템으로 무증상 런타임 버그 2건 즉시 발견·해결, 향후 디버깅 인프라 확보
 
 ---
 

@@ -13,6 +13,7 @@ const Progress = (() => {
 
   /* --- Start tracking -------------------------------------- */
   function start(taskId, totalHint) {
+    Logger.info('Progress', `Start tracking task=${taskId}, totalImages=${totalHint}`);
     currentTaskId = taskId;
     reconnectAttempts = 0;
 
@@ -26,42 +27,48 @@ const Progress = (() => {
   function connect(taskId) {
     if (ws) { ws.onclose = null; ws.close(); }
 
+    Logger.info('Progress', `WebSocket connecting for task=${taskId}`);
     ws = API.wsProgress(taskId);
 
     ws.addEventListener('open', () => {
-      /* reconnectAttempts는 start()에서만 리셋 — 재연결 중 리셋하지 않음 */
+      Logger.info('Progress', `WebSocket connected for task=${taskId}`);
     });
 
     ws.addEventListener('message', (event) => {
       try {
         const data = JSON.parse(event.data);
+        Logger.debug('Progress', `WS message: status=${data.status} progress=${data.progress}%`, data);
         updateUI(data);
 
         if (['completed', 'partial', 'failed'].includes(data.status)) {
+          Logger.info('Progress', `Task ${taskId} terminal: status=${data.status}, completed=${data.completed_images}, failed=${data.failed_images}`);
           stop();
           Result.show(taskId, data);
           App.showSection('result');
         }
       } catch (err) {
-        console.warn('[Progress] Malformed WebSocket message:', event.data, err);
+        Logger.warn('Progress', 'Malformed WebSocket message:', event.data, err);
       }
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
+      Logger.warn('Progress', `WebSocket closed: code=${event.code} reason=${event.reason} task=${taskId}`);
       if (!currentTaskId || currentTaskId !== taskId) return;
       if (reconnectAttempts < MAX_RECONNECT) {
         reconnectAttempts++;
         const delay = Math.min(1000 * 2 ** reconnectAttempts, 8000);
+        Logger.info('Progress', `Reconnecting ${reconnectAttempts}/${MAX_RECONNECT} in ${delay}ms`);
         Toast.warn(`연결 끊김 — 재연결 시도 ${reconnectAttempts}/${MAX_RECONNECT}`);
         setTimeout(() => connect(taskId), delay);
       } else {
+        Logger.error('Progress', `Max reconnect attempts reached for task=${taskId}`);
         Toast.error('서버 연결이 끊어졌습니다. 페이지를 새로고침해 주세요.');
         el('progress-status').textContent = '연결 끊김';
       }
     });
 
-    ws.addEventListener('error', () => {
-      // error fires before close; close handler will deal with reconnect
+    ws.addEventListener('error', (event) => {
+      Logger.error('Progress', `WebSocket error for task=${taskId}`, event);
     });
   }
 
@@ -92,6 +99,7 @@ const Progress = (() => {
 
   /* --- Stop / cleanup -------------------------------------- */
   function stop() {
+    Logger.debug('Progress', `Stopping tracking for task=${currentTaskId}`);
     currentTaskId = null;
     if (ws) { ws.onclose = null; ws.close(); ws = null; }
   }

@@ -15,6 +15,9 @@ models/*.bin
 # Output
 output/
 
+# Logs
+logs/
+
 # Environment
 .env
 

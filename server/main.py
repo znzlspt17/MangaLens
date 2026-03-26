@@ -9,8 +9,9 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.config import settings
@@ -164,6 +165,36 @@ if _allowed_origins:
     )
 else:
     logger.info("CORS middleware disabled because ALLOWED_ORIGINS is not configured")
+
+
+# ---------------------------------------------------------------------------
+# Request logging middleware
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log every HTTP request with method, path, status and latency."""
+    # Skip static file requests to reduce noise
+    if not request.url.path.startswith("/api") and request.url.path != "/ws":
+        return await call_next(request)
+
+    t0 = time.monotonic()
+    try:
+        response = await call_next(request)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "[http] %s %s → %d (%d ms)",
+            request.method, request.url.path, response.status_code, elapsed_ms,
+        )
+        return response
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.exception(
+            "[http] %s %s → EXCEPTION (%d ms): %s",
+            request.method, request.url.path, elapsed_ms, exc,
+        )
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
 
 # ---------------------------------------------------------------------------
 # Routers

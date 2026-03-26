@@ -67,13 +67,16 @@ const Upload = (() => {
   function validateFile(file) {
     const ext = file.name.split('.').pop().toLowerCase();
     if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      Logger.warn('Upload', `Rejected: unsupported extension .${ext} — ${file.name}`);
       Toast.error(`지원하지 않는 파일 형식입니다: ${file.name}`);
       return false;
     }
     if (file.size > MAX_FILE_SIZE) {
+      Logger.warn('Upload', `Rejected: size ${file.size} > ${MAX_FILE_SIZE} — ${file.name}`);
       Toast.error(`파일 크기가 50MB를 초과합니다: ${file.name}`);
       return false;
     }
+    Logger.debug('Upload', `Validated: ${file.name} (${file.size} bytes)`);
     return true;
   }
 
@@ -140,6 +143,9 @@ const Upload = (() => {
     const { uploadBtn } = els();
     uploadBtn.disabled = true;
 
+    Logger.info('Upload', `Starting upload: ${selectedFiles.length} file(s)`, 
+      selectedFiles.map(f => ({ name: f.name, size: f.size, type: f.type })));
+
     try {
       lastOriginalFile = selectedFiles.length === 1 ? selectedFiles[0] : null;
       let result;
@@ -152,10 +158,12 @@ const Upload = (() => {
         selectedFiles.forEach((f) => fd.append('files', f));
         result = await API.postForm('/upload/bulk', fd);
       }
+      Logger.info('Upload', `Upload success — task_id=${result.task_id}`);
       // Start progress tracking
       Progress.start(result.task_id, selectedFiles.length);
       App.showSection('progress');
     } catch (err) {
+      Logger.error('Upload', 'Upload failed:', err.message);
       Toast.error(err.message);
       uploadBtn.disabled = false;
     }
@@ -188,6 +196,9 @@ const Upload = (() => {
   }
 
   function setServerReady(ready) {
+    if (_serverReady !== ready) {
+      Logger.info('Upload', `Server ready: ${ready}`);
+    }
     _serverReady = ready;
     updateUploadBtn();
   }

@@ -73,12 +73,26 @@ async def _run_pipeline(
     Each image is processed independently — a single failure does not
     abort remaining images (PLAN.md §11).
     """
+    import time as _time
+
+    logger.info(
+        "[task:%s] Pipeline queued — %d image(s), settings=%s",
+        task_id, len(image_paths),
+        user_settings or "default",
+    )
     sem = await _get_semaphore()
+    t_wait_start = _time.monotonic()
     async with sem:
+        t_acquired = _time.monotonic()
+        wait_ms = int((t_acquired - t_wait_start) * 1000)
+        if wait_ms > 100:
+            logger.info("[task:%s] Semaphore acquired after %d ms wait", task_id, wait_ms)
+
         task_store[task_id]["status"] = "processing"
         task_store[task_id]["total_images"] = len(image_paths)
         task_store[task_id]["result_paths"] = []
         await notify_task_changed(task_id)
+        logger.info("[task:%s] Status → processing", task_id)
 
         ts = user_settings or UserTranslationSettings()
         output_base = Path(settings.output_dir) / task_id
@@ -86,6 +100,13 @@ async def _run_pipeline(
         failed = 0
 
         for idx, img_path in enumerate(image_paths):
+            t_img_start = _time.monotonic()
+            logger.info(
+                "[task:%s] Processing image %d/%d: %s (size=%s)",
+                task_id, idx + 1, len(image_paths),
+                img_path.name,
+                f"{img_path.stat().st_size} bytes" if img_path.exists() else "MISSING",
+            )
             try:
                 result = await run_pipeline(
                     image_path=img_path,
@@ -94,15 +115,19 @@ async def _run_pipeline(
                 )
                 task_store[task_id]["result_paths"].append(result.translated_image_path)
                 completed += 1
+                elapsed_ms = int((_time.monotonic() - t_img_start) * 1000)
                 logger.info(
-                    "Task %s — image %d/%d completed: %s",
-                    task_id, idx + 1, len(image_paths), img_path.name,
+                    "[task:%s] Image %d/%d completed in %d ms: %s → %s",
+                    task_id, idx + 1, len(image_paths), elapsed_ms,
+                    img_path.name, result.translated_image_path.name,
                 )
-            except Exception:
+            except Exception as exc:
                 failed += 1
+                elapsed_ms = int((_time.monotonic() - t_img_start) * 1000)
                 logger.exception(
-                    "Task %s — image %d/%d failed: %s",
-                    task_id, idx + 1, len(image_paths), img_path.name,
+                    "[task:%s] Image %d/%d FAILED after %d ms: %s — %s: %s",
+                    task_id, idx + 1, len(image_paths), elapsed_ms,
+                    img_path.name, type(exc).__name__, exc,
                 )
 
             task_store[task_id]["completed_images"] = completed
@@ -113,12 +138,20 @@ async def _run_pipeline(
             await notify_task_changed(task_id)
 
         if failed == len(image_paths):
-            task_store[task_id]["status"] = "failed"
+            final_status = "failed"
         elif failed > 0:
-            task_store[task_id]["status"] = "partial"
+            final_status = "partial"
         else:
-            task_store[task_id]["status"] = "completed"
+            final_status = "completed"
+
+        task_store[task_id]["status"] = final_status
         await notify_task_changed(task_id)
+
+        total_ms = int((_time.monotonic() - t_acquired) * 1000)
+        logger.info(
+            "[task:%s] Pipeline finished — status=%s, completed=%d, failed=%d, total_time=%d ms",
+            task_id, final_status, completed, failed, total_ms,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +168,15 @@ async def upload_single(
     background_tasks: BackgroundTasks,
 ) -> UploadResponse:
     """Upload a single manga image for translation."""
+    logger.info(
+        "[upload] Single upload: filename=%s, content_type=%s, size=%s",
+        file.filename, file.content_type, file.size,
+    )
     # Validate image
     try:
         contents = await validate_image_file(file)
     except ImageValidationError as exc:
+        logger.warning("[upload] Validation failed for %s: %s", file.filename, exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Generate task ID — datetime for human readability + short UUID suffix for uniqueness
@@ -148,6 +186,7 @@ async def upload_single(
     # Reset file position and save
     file.file.seek(0)
     saved_path = await save_upload(file, task_id)
+    logger.info("[upload] Saved %s → %s (task_id=%s)", file.filename, saved_path, task_id)
 
     # Initialise task state
     add_task(task_id, {
@@ -160,6 +199,7 @@ async def upload_single(
 
     # Schedule pipeline in background
     background_tasks.add_task(_run_pipeline, task_id, [saved_path], UserTranslationSettings())
+    logger.info("[upload] Task %s queued for background processing", task_id)
 
     return UploadResponse(task_id=task_id, status="queued")
 

@@ -1,6 +1,6 @@
 # MangaLens — 기술 결정 기록 (DECISIONS.md)
 
-> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-019)
+> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-021)
 
 ---
 
@@ -184,3 +184,22 @@
 
 - **결정**: system message와 fallback prompt에서 하드코딩된 "Japanese"/"Korean" → `{src}`/`{tgt}` 플레이스홀더 + `_LANG_NAMES` 매핑 사용
 - **근거**: `Translator(source_lang="JA", target_lang="KO")` 파라미터가 실제 프롬프트에 반영되지 않아, 향후 다국어 지원 시 프롬프트 수정 필요. 동적 언어명 삽입으로 확장성 확보
+
+---
+
+## D-020: 로깅 아키텍처 — RotatingFileHandler + 프론트엔드 링 버퍼
+
+- **결정**: 백엔드에 `RotatingFileHandler`(10MB × 5 backups), 프론트엔드에 200-entry 인메모리 링 버퍼 방식의 이중 로깅 시스템 구축
+- **근거**: 번역 실패 시 원인 추적이 불가능했음 (로그 없음). 파일 로그는 서버 재시작 후에도 보존 가능, 프론트엔드 링 버퍼는 `Logger.dump()`로 브라우저 콘솔에서 즉시 진단 가능
+- **백엔드 구현**: `server/utils/logger.py`에 파일 핸들러 추가, HTTP 미들웨어(`main.py`), 라우터/파이프라인 전 계층에 구조화된 로깅
+- **프론트엔드 구현**: `api.js`에 `Logger` IIFE 모듈 — `info/warn/error` + timestamp, 200개 초과 시 FIFO 삭제
+- **로그 경로**: `logs/mangalens.log` (`.gitignore`에 추가)
+
+---
+
+## D-021: transformers BatchEncoding 호환 — apply_chat_template 반환 타입 분기
+
+- **결정**: `translator.py`의 `_build_input_ids`에서 `apply_chat_template(return_tensors="pt")` 반환값에 대해 `hasattr(result, "input_ids")` 분기 처리
+- **근거**: transformers 5.3.0에서 `apply_chat_template`이 `return_tensors="pt"` 옵션 사용 시 bare tensor가 아닌 `BatchEncoding`(dict-like 객체)을 반환하도록 변경됨. 기존 코드는 `result.shape[1]`을 직접 호출하여 `AttributeError` 발생
+- **구현**: `BatchEncoding`이면 `result["input_ids"]` 추출, bare tensor면 그대로 사용. 두 버전 모두 호환
+- **교훈**: transformers 메이저 업데이트 시 반환 타입 변경에 주의. 테스트에서 mock 사용으로 해당 경로가 커버되지 않았음

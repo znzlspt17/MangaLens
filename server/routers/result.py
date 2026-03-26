@@ -40,9 +40,15 @@ async def get_task_status(task_id: str) -> TaskStatus:
     """Query the status of a translation task."""
     _validate_task_id(task_id)
     if task_id not in task_store:
+        logger.warning("[status] Task not found: %s", task_id)
         raise HTTPException(status_code=404, detail="Task not found.")
 
     info = task_store[task_id]
+    logger.debug(
+        "[status] task=%s status=%s progress=%.1f%% completed=%d failed=%d",
+        task_id, info["status"], info.get("progress", 0.0),
+        info.get("completed_images", 0), info.get("failed_images", 0),
+    )
     return TaskStatus(
         task_id=task_id,
         status=info["status"],
@@ -72,6 +78,10 @@ async def get_result(task_id: str) -> FileResponse:
 
     info = task_store[task_id]
     if info["status"] not in ("completed", "partial"):
+        logger.warning(
+            "[result] Download rejected: task=%s status=%s (expected completed/partial)",
+            task_id, info["status"],
+        )
         raise HTTPException(
             status_code=409,
             detail=f"Task is not completed (current: {info['status']}).",
@@ -79,6 +89,7 @@ async def get_result(task_id: str) -> FileResponse:
 
     task_dir = Path(settings.output_dir) / task_id
     if not task_dir.exists():
+        logger.error("[result] Output directory missing: %s", task_dir)
         raise HTTPException(status_code=404, detail="Result files not found.")
 
     # Collect result image files (pipeline outputs *_translated.png)
@@ -94,6 +105,11 @@ async def get_result(task_id: str) -> FileResponse:
         )
 
     if not result_files:
+        all_files = [p.name for p in task_dir.iterdir() if p.is_file()]
+        logger.error(
+            "[result] No result images found for task=%s. Files in dir: %s",
+            task_id, all_files,
+        )
         raise HTTPException(status_code=404, detail="No result images found.")
 
     # Determine media type from file extension

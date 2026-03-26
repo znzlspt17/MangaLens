@@ -11,6 +11,7 @@ const Result = (() => {
 
   /* --- Show result ----------------------------------------- */
   function show(taskId, data) {
+    Logger.info('Result', `Showing result: task=${taskId}, status=${data.status}, completed=${data.completed_images}, failed=${data.failed_images}`);
     lastTaskId = taskId;
 
     const completed = data.completed_images ?? 0;
@@ -169,6 +170,7 @@ const Result = (() => {
   function init() {
     el('download-btn').addEventListener('click', async () => {
       if (!lastTaskId) return;
+      Logger.info('Result', `Download requested: task=${lastTaskId}`);
       const btn = el('download-btn');
       btn.disabled = true;
       btn.textContent = '다운로드 중…';
@@ -179,8 +181,10 @@ const Result = (() => {
         document.body.appendChild(a);
         a.click();
         a.remove();
+        Logger.info('Result', `Download initiated for task=${lastTaskId}`);
         Toast.success('다운로드가 시작되었습니다');
-      } catch {
+      } catch (err) {
+        Logger.error('Result', `Download failed for task=${lastTaskId}:`, err.message);
         Toast.error('다운로드에 실패했습니다');
       } finally {
         setTimeout(() => {

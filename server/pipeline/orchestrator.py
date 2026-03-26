@@ -133,14 +133,17 @@ async def run_pipeline(
         from server.gpu import get_device
         device = get_device()
     except Exception:
-        pass
+        logger.warning("[pipeline] GPU device detection failed, falling back to CPU")
 
     # Load image
     original = cv2.imread(str(image_path))
     if original is None:
+        logger.error("[pipeline] cv2.imread failed: %s (exists=%s, size=%s)",
+                     image_path, image_path.exists(),
+                     image_path.stat().st_size if image_path.exists() else 'N/A')
         raise FileNotFoundError(f"Cannot read image: {image_path}")
     img_h, img_w = original.shape[:2]
-    logger.info("Pipeline start: %s (%dx%d)", image_path.name, img_w, img_h)
+    logger.info("[pipeline] Start: %s (%dx%d, device=%s)", image_path.name, img_w, img_h, device)
 
     # ── Stage 1: Bubble Detection ──────────────────────────────────────
     logger.info("[1/7] Detecting bubbles")
@@ -221,29 +224,39 @@ async def run_pipeline(
 
     async def _do_translation() -> list[str]:
         if not texts_to_translate:
+            logger.info("[pipeline] No texts to translate (all skipped)")
             return []
+        logger.info("[pipeline] Translating %d text(s): %s → %s",
+                    len(texts_to_translate), settings.source_lang, settings.target_lang)
         try:
-            return await translator.translate_batch(
+            results = await translator.translate_batch(
                 texts_to_translate,
                 context=texts_to_translate,
             )
-        except Exception:
-            logger.exception("Translation failed after retries")
+            logger.info("[pipeline] Translation success: %d text(s) translated", len(results))
+            return results
+        except Exception as exc:
+            logger.exception(
+                "[pipeline] Translation FAILED (%s: %s) — falling back to original texts",
+                type(exc).__name__, exc,
+            )
             # Fallback: return original texts (§11 error recovery)
             return list(texts_to_translate)
 
     async def _do_erasure() -> np.ndarray:
         # Build a combined mask for all translatable bubbles
         mask = np.zeros(original.shape[:2], dtype=np.uint8)
+        mask_sources = {"provided": 0, "fallback_bbox": 0}
         for ctx in contexts:
             if ctx.info.mask is not None:
                 mask = np.maximum(mask, ctx.info.mask)
+                mask_sources["provided"] += 1
             else:
-                # Fallback: generate rectangular mask from bbox
-                # (Magi v2 returns mask=None; without this the eraser
-                # receives an all-zeros mask and keeps original text)
                 bx, by, bw, bh = ctx.info.bbox
                 mask[by:by + bh, bx:bx + bw] = 255
+                mask_sources["fallback_bbox"] += 1
+        logger.info("[pipeline] Erasure mask: %d provided, %d bbox fallback",
+                    mask_sources["provided"], mask_sources["fallback_bbox"])
         return await text_eraser.erase(original, mask)
 
     translated_texts, erased_image = await asyncio.gather(
@@ -341,10 +354,12 @@ async def run_pipeline(
     log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2))
 
     logger.info(
-        "Pipeline complete: %s → %s (%d ms)",
+        "[pipeline] Complete: %s → %s (%d ms, %d bubbles, %d translated)",
         image_path.name,
         output_image_path.name,
         elapsed_ms,
+        len(translatable),
+        len([c for c in contexts if not c.skipped]),
     )
 
     # Free intermediate GPU tensors
@@ -352,8 +367,8 @@ async def run_pipeline(
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("[pipeline] CUDA cache clear failed: %s", exc)
 
     return PipelineResult(
         translated_image_path=output_image_path,

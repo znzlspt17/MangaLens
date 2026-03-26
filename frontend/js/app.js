@@ -66,15 +66,18 @@ const App = (() => {
         const gpuName = data.gpu_info?.gpu_name || '';
         label.textContent = gpuName ? `Ready · ${gpuName}` : 'Ready';
         Upload.setServerReady(true);
+        Logger.info('App', `Health OK: ready=true, gpu=${gpuName}`);
       } else {
         dot.className = 'status-dot status-dot--not-ready';
         label.textContent = '모델 로딩 중…';
         Upload.setServerReady(false);
+        Logger.warn('App', 'Health: server not ready (models loading)');
       }
-    } catch {
+    } catch (err) {
       dot.className = 'status-dot status-dot--not-ready';
       label.textContent = '서버 연결 실패';
       Upload.setServerReady(false);
+      Logger.error('App', 'Health check failed:', err.message);
     }
   }
 
@@ -89,6 +92,7 @@ const App = (() => {
 
   /* --- Boot ------------------------------------------------ */
   function boot() {
+    Logger.info('App', 'Booting MangaLens frontend...');
     initTheme();
     Upload.init();
     Result.init();
@@ -98,6 +102,7 @@ const App = (() => {
     // Initial health check + periodic
     checkHealth();
     setInterval(checkHealth, 30000);
+    Logger.info('App', 'Boot complete');
   }
 
   document.addEventListener('DOMContentLoaded', boot);
