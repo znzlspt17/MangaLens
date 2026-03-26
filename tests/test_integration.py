@@ -132,34 +132,38 @@ class TestStatusEndpoint:
     """GET /api/status/{task_id}."""
 
     async def test_unknown_task_returns_404(self, client: httpx.AsyncClient):
-        resp = await client.get("/api/status/nonexistent-task-id")
+        resp = await client.get("/api/status/20260101_000000_000_aaaaaa")
         assert resp.status_code == 404
 
+    async def test_invalid_task_id_returns_400(self, client: httpx.AsyncClient):
+        resp = await client.get("/api/status/nonexistent-task-id")
+        assert resp.status_code == 400
+
     async def test_existing_task_returns_status(self, client: httpx.AsyncClient):
-        task_store["task-123"] = {
+        task_store["20260101_000001_000_aaaaab"] = {
             "status": "processing",
             "progress": 50.0,
             "total_images": 2,
             "completed_images": 1,
             "failed_images": 0,
         }
-        resp = await client.get("/api/status/task-123")
+        resp = await client.get("/api/status/20260101_000001_000_aaaaab")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["task_id"] == "task-123"
+        assert body["task_id"] == "20260101_000001_000_aaaaab"
         assert body["status"] == "processing"
         assert body["progress"] == 50.0
         assert body["completed_images"] == 1
 
     async def test_queued_task_shows_zero_progress(self, client: httpx.AsyncClient):
-        task_store["task-q"] = {
+        task_store["20260101_000002_000_aaaaac"] = {
             "status": "queued",
             "progress": 0.0,
             "total_images": 1,
             "completed_images": 0,
             "failed_images": 0,
         }
-        resp = await client.get("/api/status/task-q")
+        resp = await client.get("/api/status/20260101_000002_000_aaaaac")
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "queued"
@@ -175,25 +179,29 @@ class TestResultEndpoint:
     """GET /api/result/{task_id}."""
 
     async def test_unknown_task_returns_404(self, client: httpx.AsyncClient):
-        resp = await client.get("/api/result/nonexistent")
+        resp = await client.get("/api/result/20260101_000010_000_bbbbbb")
         assert resp.status_code == 404
 
+    async def test_invalid_task_id_returns_400(self, client: httpx.AsyncClient):
+        resp = await client.get("/api/result/nonexistent")
+        assert resp.status_code == 400
+
     async def test_not_completed_returns_409(self, client: httpx.AsyncClient):
-        task_store["task-proc"] = {
+        task_store["20260101_000011_000_bbbbbc"] = {
             "status": "processing",
             "progress": 30.0,
             "total_images": 1,
             "completed_images": 0,
             "failed_images": 0,
         }
-        resp = await client.get("/api/result/task-proc")
+        resp = await client.get("/api/result/20260101_000011_000_bbbbbc")
         assert resp.status_code == 409
 
     async def test_completed_single_image_downloadable(
         self, client: httpx.AsyncClient, tmp_path: Path
     ):
         """Completed task with result file returns 200 with file content."""
-        task_id = "task-done-single"
+        task_id = "20260101_000012_000_bbbbbd"
         task_store[task_id] = {
             "status": "completed",
             "progress": 100.0,
@@ -219,7 +227,7 @@ class TestResultEndpoint:
         self, client: httpx.AsyncClient, tmp_path: Path
     ):
         """Completed task but empty directory returns 404."""
-        task_id = "task-empty"
+        task_id = "20260101_000013_000_bbbbbe"
         task_store[task_id] = {
             "status": "completed",
             "progress": 100.0,
@@ -249,7 +257,7 @@ class TestResultEndpoint:
         before FileResponse can serve it, causing a RuntimeError. This is a
         production code issue (server/routers/result.py).
         """
-        task_id = "task-delete-dl"
+        task_id = "20260101_000014_000_bbbbcf"
         task_store[task_id] = {
             "status": "completed",
             "progress": 100.0,

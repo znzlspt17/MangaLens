@@ -1,6 +1,6 @@
 # MangaLens — 기술 결정 기록 (DECISIONS.md)
 
-> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-016)
+> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-019)
 
 ---
 
@@ -161,3 +161,26 @@
   - `ws.py`: `subscribe()` 호출 후 `asyncio.wait_for(q.get(), 5.0)` — 5초 timeout 시 heartbeat 전송
   - `upload.py`: 처리 시작, 이미지 완료, 최종 상태 3개소에서 `notify_task_changed()` 호출
 - **안전성**: `finally` 블록에서 `unsubscribe()` 보장으로 연결 종료 시 Queue 누수 없음
+
+---
+
+## D-017: task_id 경로 순회 방어 — regex 검증
+
+- **결정**: `result.py`의 `GET /api/status/{task_id}` 및 `GET /api/result/{task_id}`에 `^[0-9]{8}_[0-9]{6}_[0-9]{3}_[0-9a-f]{6}$` 정규식 검증 추가
+- **근거**: `task_id`가 `../../../etc/passwd` 같은 경로를 포함할 경우 `Path(output_dir) / task_id`로 임의 파일 접근 가능. 생성 시 사용하는 정확한 형식만 허용하여 경로 순회 공격 차단
+- **영향**: 유효하지 않은 형식의 task_id → HTTP 400 Bad Request 반환
+
+---
+
+## D-018: task_store 메모리 제한 — OrderedDict + 자동 퇴출
+
+- **결정**: `task_store`를 `dict` → `OrderedDict`로 교체 + 최대 500건 제한, 초과 시 가장 오래된 항목 자동 퇴출
+- **근거**: 장기 운영 시 완료/실패 태스크가 무한 누적되어 메모리 소진. OrderedDict의 FIFO 특성을 활용하여 최소한의 코드로 LRU-like 제한 구현
+- **구현**: `add_task()` 함수로 삽입 통일, `while len > _MAX_TASKS: popitem(last=False)`
+
+---
+
+## D-019: 번역 프롬프트 — 동적 언어명 템플릿
+
+- **결정**: system message와 fallback prompt에서 하드코딩된 "Japanese"/"Korean" → `{src}`/`{tgt}` 플레이스홀더 + `_LANG_NAMES` 매핑 사용
+- **근거**: `Translator(source_lang="JA", target_lang="KO")` 파라미터가 실제 프롬프트에 반영되지 않아, 향후 다국어 지원 시 프롬프트 수정 필요. 동적 언어명 삽입으로 확장성 확보

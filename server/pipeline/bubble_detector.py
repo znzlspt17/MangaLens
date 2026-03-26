@@ -10,6 +10,7 @@ Falls back to an OpenCV contour detector when the model is unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -186,9 +187,13 @@ class BubbleDetector:
 
         orig_h, orig_w = image.shape[:2]
 
-        tensor = self._preprocess(image).to(self.device)
-        with torch.no_grad():
-            preds = self._model(tensor)  # (1, N, 5+nc)
+        def _infer_sync():
+            tensor = self._preprocess(image).to(self.device)
+            with torch.no_grad():
+                preds = self._model(tensor)  # (1, N, 5+nc)
+            return preds
+
+        preds = await asyncio.to_thread(_infer_sync)
 
         preds = preds[0]  # first (only) batch item
         obj_conf = preds[:, 4]
@@ -225,7 +230,7 @@ class BubbleDetector:
             mask_img = np.zeros((orig_h, orig_w), dtype=np.uint8)
             mask_img[by1:by2, bx1:bx2] = 255
             text_dir = "vertical" if bh > bw * 1.2 else "horizontal"
-            bubble_type = "text" if cid == 0 else "speech"
+            bubble_type = "text" if cid == 0 else ("effect" if cid == 2 else "speech")
             bubbles.append(
                 BubbleInfo(
                     id=i + 1,

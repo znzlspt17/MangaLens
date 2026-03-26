@@ -54,6 +54,9 @@ const Progress = (() => {
         const delay = Math.min(1000 * 2 ** reconnectAttempts, 8000);
         Toast.warn(`연결 끊김 — 재연결 시도 ${reconnectAttempts}/${MAX_RECONNECT}`);
         setTimeout(() => connect(taskId), delay);
+      } else {
+        Toast.error('서버 연결이 끊어졌습니다. 페이지를 새로고침해 주세요.');
+        el('progress-status').textContent = '연결 끊김';
       }
     });
 

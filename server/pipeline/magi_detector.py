@@ -5,10 +5,18 @@ alternative to :class:`BubbleDetector`.  The model performs detection,
 reading-order sorting, and essential-text classification in one pass.
 
 Requires ``transformers>=5.0`` and ``accelerate``.
+
+Fixes vs original implementation:
+  1. BGR→RGB conversion before inference (OpenCV reads BGR; Magi expects RGB).
+  2. Blocking inference is offloaded to a thread via ``asyncio.to_thread``
+     so the ASGI event loop is never stalled.
+  3. ``torch.float16`` is used on non-CPU devices to match memory usage of
+     other pipeline components.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -57,9 +65,11 @@ class MagiDetector:
             import torch
             from transformers import AutoModel
 
+            torch_dtype = torch.float16 if device != "cpu" else torch.float32
             model = AutoModel.from_pretrained(
                 "ragavsachdeva/magiv2",
                 trust_remote_code=True,
+                torch_dtype=torch_dtype,
             )
             if device != "cpu":
                 model = model.to(device)
@@ -84,10 +94,16 @@ class MagiDetector:
             logger.info("Magi v2 not loaded; returning empty list")
             return []
 
+        # OpenCV provides BGR; Magi v2 expects RGB — channel order matters.
+        rgb_image = image[:, :, ::-1].copy()
+
         import torch
 
-        with torch.no_grad():
-            results = self._model.predict_detections_and_associations([image])
+        def _infer(img: np.ndarray):
+            with torch.no_grad():
+                return self._model.predict_detections_and_associations([img])
+
+        results = await asyncio.to_thread(_infer, rgb_image)
 
         if not results:
             return []

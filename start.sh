@@ -51,7 +51,6 @@ if [[ ! -f .env ]]; then
   if [[ -f .env.example ]]; then
     warn ".env 파일이 없습니다. .env.example 에서 복사합니다."
     cp .env.example .env
-    warn "⚠  .env를 열어 API 키를 설정하세요 (편집기로 열기: nano .env)"
   else
     error ".env 파일이 없습니다."
     exit 1
@@ -61,8 +60,24 @@ fi
 # ── ROCm 환경 자동 설정 ───────────────────────────────────────────────────
 if command -v rocm-smi &>/dev/null; then
   if [[ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
-    export HSA_OVERRIDE_GFX_VERSION=12.0.1
-    info "ROCm gfx1201 감지 → HSA_OVERRIDE_GFX_VERSION=12.0.1 설정"
+    # Detect actual GPU architecture from rocminfo
+    if command -v rocminfo &>/dev/null; then
+      _gfx=$(rocminfo 2>/dev/null | grep -oP 'gfx\K[0-9]+' | head -1)
+      if [[ -n "$_gfx" ]]; then
+        # Convert e.g. 1201 -> 12.0.1
+        _major=${_gfx:0:2}
+        _minor=${_gfx:2:1}
+        _patch=${_gfx:3:1}
+        export HSA_OVERRIDE_GFX_VERSION="${_major}.${_minor}.${_patch}"
+        export PYTORCH_ROCM_ARCH="gfx${_gfx}"
+        info "ROCm gfx${_gfx} 감지 → HSA_OVERRIDE_GFX_VERSION=${_major}.${_minor}.${_patch}"
+      fi
+    fi
+    if [[ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
+      export HSA_OVERRIDE_GFX_VERSION=12.0.1
+      export PYTORCH_ROCM_ARCH=gfx1201
+      info "ROCm 기본값 → HSA_OVERRIDE_GFX_VERSION=12.0.1"
+    fi
   fi
   if [[ -z "${PYTORCH_ROCM_ARCH:-}" ]]; then
     export PYTORCH_ROCM_ARCH=gfx1201

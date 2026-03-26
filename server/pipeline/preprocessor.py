@@ -255,8 +255,13 @@ class Preprocessor:
         if self._model_loaded and crop_h >= _MIN_ESRGAN_DIM and crop_w >= _MIN_ESRGAN_DIM:
             import torch
             upsampler = self._upsampler_x4 if scale == 4 else self._upsampler_x2
-            with torch.no_grad():
-                output, _ = upsampler.enhance(crop, outscale=scale)
+
+            def _upscale_sync():
+                with torch.no_grad():
+                    out, _ = upsampler.enhance(crop, outscale=scale)
+                return out
+
+            output = await asyncio.to_thread(_upscale_sync)
             return remove_furigana(output)
 
         upscaled = cv2.resize(

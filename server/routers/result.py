@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,14 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api", tags=["result"])
 
+_TASK_ID_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[0-9]{3}_[0-9a-f]{6}$")
+
+
+def _validate_task_id(task_id: str) -> None:
+    """Reject task_id values that don't match the expected format."""
+    if not _TASK_ID_RE.match(task_id):
+        raise HTTPException(status_code=400, detail="Invalid task ID format.")
+
 
 # ---------------------------------------------------------------------------
 # GET /api/status/{task_id}
@@ -29,6 +38,7 @@ router = APIRouter(prefix="/api", tags=["result"])
 )
 async def get_task_status(task_id: str) -> TaskStatus:
     """Query the status of a translation task."""
+    _validate_task_id(task_id)
     if task_id not in task_store:
         raise HTTPException(status_code=404, detail="Task not found.")
 
@@ -56,11 +66,12 @@ async def get_result(task_id: str) -> FileResponse:
 
     Returns a single image or a ZIP for bulk tasks.
     """
+    _validate_task_id(task_id)
     if task_id not in task_store:
         raise HTTPException(status_code=404, detail="Task not found.")
 
     info = task_store[task_id]
-    if info["status"] != "completed":
+    if info["status"] not in ("completed", "partial"):
         raise HTTPException(
             status_code=409,
             detail=f"Task is not completed (current: {info['status']}).",

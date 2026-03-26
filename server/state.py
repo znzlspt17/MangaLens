@@ -6,9 +6,19 @@ Keeps task_store in one place so routers don't cross-import each other.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+
+_MAX_TASKS = 500
 
 # Structure: { task_id: { status, progress, total_images, completed_images, failed_images } }
-task_store: dict[str, dict] = {}
+task_store: OrderedDict[str, dict] = OrderedDict()
+
+
+def add_task(task_id: str, info: dict) -> None:
+    """Insert a task, evicting the oldest if the store exceeds _MAX_TASKS."""
+    task_store[task_id] = info
+    while len(task_store) > _MAX_TASKS:
+        task_store.popitem(last=False)
 
 # ---------------------------------------------------------------------------
 # P1/P2: WebSocket pub/sub — per-task notification queues
@@ -36,6 +46,8 @@ def unsubscribe(task_id: str, q: asyncio.Queue[bool]) -> None:
             watchers.remove(q)
         except ValueError:
             pass
+        if not watchers:
+            del _task_watchers[task_id]
 
 
 async def notify_task_changed(task_id: str) -> None:

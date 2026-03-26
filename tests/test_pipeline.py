@@ -372,6 +372,61 @@ class TestTranslator:
             )
         assert t.target_lang == "KO"
         await t.close()
+
+    def test_postprocess_strips_noise_prefix(self):
+        """_postprocess removes leading '. ' or '* ' markers."""
+        from server.pipeline.translator import _postprocess
+
+        assert _postprocess(". 안녕하세요", "テスト") == "안녕하세요"
+        assert _postprocess("* 결과", "テスト") == "결과"
+
+    def test_postprocess_truncates_at_note(self):
+        """_postprocess truncates at Note / ※ markers."""
+        from server.pipeline.translator import _postprocess
+
+        raw = "번역 결과\n※ 이것은 참고입니다"
+        assert "※" not in _postprocess(raw, "テスト")
+
+    def test_postprocess_hallucination_guard(self):
+        """_postprocess truncates output vastly longer than source."""
+        from server.pipeline.translator import _postprocess
+
+        short_src = "hi"
+        long_output = "아" * 500
+        result = _postprocess(long_output, short_src)
+        assert len(result) < len(long_output)
+
+    def test_dynamic_max_new_tokens_short_input(self):
+        """Short input gets at least _MAX_NEW_TOKENS_FLOOR tokens."""
+        from server.pipeline.translator import _dynamic_max_new_tokens
+
+        result = _dynamic_max_new_tokens(2)
+        assert result >= 32
+
+    def test_dynamic_max_new_tokens_long_input(self):
+        """Long input is capped at _MAX_NEW_TOKENS_HARD_CAP."""
+        from server.pipeline.translator import _dynamic_max_new_tokens
+
+        result = _dynamic_max_new_tokens(200)
+        assert result <= 256
+
+    def test_dynamic_max_new_tokens_proportional(self):
+        """Mid-range input scales proportionally."""
+        from server.pipeline.translator import _dynamic_max_new_tokens
+
+        result = _dynamic_max_new_tokens(20)
+        assert result == 80  # 20 * 4
+
+    def test_lang_names_reflected_in_system_msg(self):
+        """_SYSTEM_MSG_TEMPLATE uses correct language names."""
+        from server.pipeline.translator import _SYSTEM_MSG_TEMPLATE, _LANG_NAMES
+
+        msg = _SYSTEM_MSG_TEMPLATE.format(
+            src=_LANG_NAMES["JA"], tgt=_LANG_NAMES["EN"]
+        )
+        assert "Japanese" in msg
+        assert "English" in msg
+
 # ---------------------------------------------------------------------------
 # TestTextEraser
 # ---------------------------------------------------------------------------
@@ -597,6 +652,26 @@ class TestCompositor:
         rb = RenderedBubble(bbox=(40, 40, 30, 30), image=overlay)
         result = await Compositor.composite(orig, [rb])
         assert result.shape == orig.shape
+
+    async def test_rgb_to_bgr_conversion(self):
+        """Overlay RGBA (RGB order) is converted to BGR before blending with BGR original."""
+        from server.pipeline.compositor import Compositor, RenderedBubble
+
+        # Create a BGR original (all zero = black)
+        orig = np.zeros((100, 100, 3), dtype=np.uint8)
+
+        # Overlay is RGBA with pure red in RGB order: (255, 0, 0, 255)
+        overlay = np.zeros((20, 20, 4), dtype=np.uint8)
+        overlay[:, :, 0] = 255  # R channel in RGBA
+        overlay[:, :, 3] = 255  # full opacity
+
+        rb = RenderedBubble(bbox=(10, 10, 20, 20), image=overlay)
+        result = await Compositor.composite(orig, [rb])
+
+        # In BGR output, red should be in channel 2 (not channel 0)
+        region = result[15, 15]  # pick center pixel
+        assert region[2] > 200, f"BGR channel 2 (red) should be bright, got {region[2]}"
+        assert region[0] < 50, f"BGR channel 0 (blue) should be dark, got {region[0]}"
 
 
 # ---------------------------------------------------------------------------

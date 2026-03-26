@@ -46,7 +46,7 @@ async def _get_cached(cls: type, key: str, **kwargs) -> object:
     # Slow path — acquire lock and re-check (double-checked locking)
     async with _model_cache_lock:
         if key not in _model_cache:
-            _model_cache[key] = cls(**kwargs)
+            _model_cache[key] = await asyncio.to_thread(cls, **kwargs)
             logger.info("Model cached: %s", key)
     return _model_cache[key]
 
@@ -238,6 +238,12 @@ async def run_pipeline(
         for ctx in contexts:
             if ctx.info.mask is not None:
                 mask = np.maximum(mask, ctx.info.mask)
+            else:
+                # Fallback: generate rectangular mask from bbox
+                # (Magi v2 returns mask=None; without this the eraser
+                # receives an all-zeros mask and keeps original text)
+                bx, by, bw, bh = ctx.info.bbox
+                mask[by:by + bh, bx:bx + bw] = 255
         return await text_eraser.erase(original, mask)
 
     translated_texts, erased_image = await asyncio.gather(

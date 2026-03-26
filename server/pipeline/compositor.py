@@ -80,10 +80,11 @@ class Compositor:
             alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1, sigmaY=1)
 
             alpha_3ch = alpha[:, :, np.newaxis]
-            overlay_rgb = overlay_region[:, :, :3].astype(np.float32)
+            # Overlay is RGBA (RGB order from Pillow), original is BGR (OpenCV).
+            overlay_bgr = overlay_region[:, :, [2, 1, 0]].astype(np.float32)
             original_region = result[dst_y0:dst_y1, dst_x0:dst_x1].astype(np.float32)
 
-            blended = alpha_3ch * overlay_rgb + (1.0 - alpha_3ch) * original_region
+            blended = alpha_3ch * overlay_bgr + (1.0 - alpha_3ch) * original_region
             result[dst_y0:dst_y1, dst_x0:dst_x1] = np.clip(blended, 0, 255).astype(np.uint8)
 
         return result

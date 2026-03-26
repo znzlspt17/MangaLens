@@ -21,7 +21,7 @@ from server.utils.image import (
     validate_image_file,
     save_upload,
 )
-from server.state import task_store, notify_task_changed
+from server.state import task_store, notify_task_changed, add_task
 from server.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -150,13 +150,13 @@ async def upload_single(
     saved_path = await save_upload(file, task_id)
 
     # Initialise task state
-    task_store[task_id] = {
+    add_task(task_id, {
         "status": "queued",
         "progress": 0.0,
         "total_images": 1,
         "completed_images": 0,
         "failed_images": 0,
-    }
+    })
 
     # Schedule pipeline in background
     background_tasks.add_task(_run_pipeline, task_id, [saved_path], UserTranslationSettings())
@@ -217,8 +217,35 @@ async def upload_bulk(
         task_dir = Path(settings.output_dir) / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
 
+        # ZIP bomb defense: limit total decompressed size
+        _MAX_DECOMPRESSED = settings.max_upload_size * _MAX_BULK_IMAGES
+        total_decompressed = 0
+
         for entry_name in entries:
+            info = zf.getinfo(entry_name)
+            if info.file_size > settings.max_upload_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"ZIP entry too large: {entry_name}",
+                )
+            total_decompressed += info.file_size
+            if total_decompressed > _MAX_DECOMPRESSED:
+                raise HTTPException(
+                    status_code=413,
+                    detail="ZIP total decompressed size exceeds limit.",
+                )
+
             data = zf.read(entry_name)
+
+            # Validate each entry as a real image (magic bytes + Pillow verify)
+            try:
+                from PIL import Image as PILImage
+                img = PILImage.open(io.BytesIO(data))
+                img.verify()
+            except Exception:
+                logger.warning("Skipping invalid image in ZIP: %s", entry_name)
+                continue
+
             ext = Path(entry_name).suffix.lower()
             safe_name = f"{uuid.uuid4().hex}{ext}"
             dest = task_dir / safe_name
@@ -246,13 +273,13 @@ async def upload_bulk(
         raise HTTPException(status_code=400, detail="No valid images provided.")
 
     # Initialise task state
-    task_store[task_id] = {
+    add_task(task_id, {
         "status": "queued",
         "progress": 0.0,
         "total_images": len(image_paths),
         "completed_images": 0,
         "failed_images": 0,
-    }
+    })
 
     user_settings = UserTranslationSettings()
     background_tasks.add_task(_run_pipeline, task_id, image_paths, user_settings)
