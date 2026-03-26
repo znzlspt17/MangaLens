@@ -303,15 +303,21 @@ class TestTranslator:
 
         translated = ["안녕하세요", "감사합니다", "잘 자요"]
         with patch.object(trans_mod, "_ensure_model_loaded"):
+            # A-1: batch context tried first for 2+ items, mock it to return None (fallback)
             with patch.object(
                 trans_mod,
-                "_translate_texts_sync",
-                return_value=translated,
+                "_translate_batch_context_sync",
+                return_value=None,
             ):
-                t = Translator()
-                result = await t.translate_batch(
-                    ["こんにちは", "ありがとう", "おやすみ"]
-                )
+                with patch.object(
+                    trans_mod,
+                    "_translate_texts_sync",
+                    return_value=translated,
+                ):
+                    t = Translator()
+                    result = await t.translate_batch(
+                        ["こんにちは", "ありがとう", "おやすみ"]
+                    )
 
         assert result == translated
         await t.close()
@@ -323,13 +329,19 @@ class TestTranslator:
         from unittest.mock import patch
 
         with patch.object(trans_mod, "_ensure_model_loaded"):
+            # A-1: batch context fails too
             with patch.object(
                 trans_mod,
-                "_translate_texts_sync",
-                side_effect=RuntimeError("CUDA OOM"),
+                "_translate_batch_context_sync",
+                return_value=None,
             ):
-                t = Translator()
-                result = await t.translate_batch(["テスト"])
+                with patch.object(
+                    trans_mod,
+                    "_translate_texts_sync",
+                    side_effect=RuntimeError("CUDA OOM"),
+                ):
+                    t = Translator()
+                    result = await t.translate_batch(["テスト"])
 
         assert result == ["テスト"]
         await t.close()
@@ -426,6 +438,83 @@ class TestTranslator:
         )
         assert "Japanese" in msg
         assert "English" in msg
+
+    # -- A-1: Context Window Translation tests --
+
+    def test_build_batch_input(self):
+        """_build_batch_input formats texts with numbered tags."""
+        from server.pipeline.translator import _build_batch_input
+
+        result = _build_batch_input(["hello", "world"])
+        assert result == "<1> hello\n<2> world"
+
+    def test_parse_batch_output_success(self):
+        """_parse_batch_output correctly parses all numbered lines."""
+        from server.pipeline.translator import _parse_batch_output
+
+        raw = "<1> 안녕하세요\n<2> 세상"
+        result = _parse_batch_output(raw, 2)
+        assert result == ["안녕하세요", "세상"]
+
+    def test_parse_batch_output_partial_failure(self):
+        """_parse_batch_output returns None if too few lines parsed."""
+        from server.pipeline.translator import _parse_batch_output
+
+        raw = "<1> 안녕하세요\ngarbage"
+        result = _parse_batch_output(raw, 5)
+        assert result is None
+
+    def test_parse_batch_output_tolerates_missing(self):
+        """_parse_batch_output returns partial with empty strings for missing tags."""
+        from server.pipeline.translator import _parse_batch_output
+
+        raw = "<1> first\n<3> third"
+        result = _parse_batch_output(raw, 3)
+        # 2 out of 3 parsed = 66.7% < 70% threshold → None
+        assert result is None
+
+    async def test_translate_batch_context_success(self):
+        """translate_batch uses batch context when it succeeds."""
+        import server.pipeline.translator as trans_mod
+        from server.pipeline.translator import Translator
+        from unittest.mock import patch
+
+        batch_result = ["번역1", "번역2"]
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_batch_context_sync",
+                return_value=batch_result,
+            ):
+                t = Translator()
+                result = await t.translate_batch(["テスト1", "テスト2"])
+
+        assert result == batch_result
+        await t.close()
+
+    async def test_translate_batch_context_fallback(self):
+        """translate_batch falls back to individual when batch context fails."""
+        import server.pipeline.translator as trans_mod
+        from server.pipeline.translator import Translator
+        from unittest.mock import patch
+
+        individual_result = ["개별1", "개별2"]
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_batch_context_sync",
+                return_value=None,
+            ):
+                with patch.object(
+                    trans_mod,
+                    "_translate_texts_sync",
+                    return_value=individual_result,
+                ):
+                    t = Translator()
+                    result = await t.translate_batch(["テスト1", "テスト2"])
+
+        assert result == individual_result
+        await t.close()
 
 # ---------------------------------------------------------------------------
 # TestTextEraser
@@ -562,7 +651,7 @@ class TestTextRenderer:
         After pipeline fix: overlay height must expand to fit all wrapped lines,
         or font size must shrink until all lines fit within original bbox height.
         """
-        from server.pipeline.text_renderer import _LINE_HEIGHT_RATIO, _PADDING
+        from server.pipeline.text_renderer import _LINE_HEIGHT_RATIO_MANY, _PADDING
 
         img = np.zeros((82, 23, 3), dtype=np.uint8)
         bbox = (0, 0, 23, 82)
@@ -574,7 +663,7 @@ class TestTextRenderer:
         font = renderer._load_font(font_size)
         usable_w = max(23 - _PADDING * 2, 1)
         lines = renderer._wrap_text(text, font, usable_w)
-        line_height = int(font_size * _LINE_HEIGHT_RATIO)
+        line_height = int(font_size * _LINE_HEIGHT_RATIO_MANY)
         needed_h = len(lines) * line_height + _PADDING * 2
 
         assert result.shape[0] >= needed_h, (

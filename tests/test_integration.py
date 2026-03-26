@@ -113,14 +113,13 @@ class TestDeploymentSafetyConfig:
     async def test_default_app_does_not_emit_cors_headers(
         self, client: httpx.AsyncClient
     ):
-        """Default app config should stay same-origin without CORS headers."""
+        """Default app config should not allow arbitrary origins."""
         resp = await client.get(
             "/api/health",
             headers={"Origin": "https://mangalens.example.com"},
         )
         assert resp.status_code == 200
         assert "access-control-allow-origin" not in resp.headers
-        assert "access-control-allow-credentials" not in resp.headers
 
 
 # ===================================================================

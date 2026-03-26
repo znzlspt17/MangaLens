@@ -1,6 +1,6 @@
 # MangaLens — 기술 결정 기록 (DECISIONS.md)
 
-> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-021)
+> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-022)
 
 ---
 
@@ -194,6 +194,15 @@
 - **백엔드 구현**: `server/utils/logger.py`에 파일 핸들러 추가, HTTP 미들웨어(`main.py`), 라우터/파이프라인 전 계층에 구조화된 로깅
 - **프론트엔드 구현**: `api.js`에 `Logger` IIFE 모듈 — `info/warn/error` + timestamp, 200개 초과 시 FIFO 삭제
 - **로그 경로**: `logs/mangalens.log` (`.gitignore`에 추가)
+
+---
+
+## D-022: 텍스트 렌더링 — 스트로크 인식 줄바꿈 너비 + x 하한 보장
+
+- **결정**: `_wrap_text()` 호출 시 `wrap_w = usable_w - 2 × stroke_width` 사용, `_draw_horizontal()`에서 `x = max(stroke_width, _PADDING + …)` 하한 적용
+- **근거**: `stroke_width`가 커질수록(폰트 크기 비례) 스트로크가 오버레이 왼쪽 경계를 침범하여 글자가 잘림. 줄바꿈 기준 너비를 미리 축소하면 가장 긴 줄도 스트로크 포함 시 오버레이 안에 들어감. x 하한은 이중 안전장치
+- **영향 범위**: 소형 버블(stroke_width=1)은 2px, 대형 버블(font_size≥40, stroke_width=2)은 4px 너비 감소 — 텍스트 양에 따라 줄 수가 1줄 늘어날 수 있으나 잘림 없이 정상 표시
+- **관련 결정**: D-003 (Pillow 렌더링), Phase 15 수정
 
 ---
 

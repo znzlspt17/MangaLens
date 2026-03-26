@@ -174,3 +174,51 @@ async def get_result(task_id: str) -> FileResponse:
         logger.info("Deleted result for task %s after download", task_id)
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# GET /api/result/{task_id}/{index}
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/result/{task_id}/{index}",
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def get_result_image(task_id: str, index: int) -> FileResponse:
+    """Return the i-th translated image (0-based) for bulk comparison viewer."""
+    _validate_task_id(task_id)
+    if task_id not in task_store:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    info = task_store[task_id]
+    if info["status"] not in ("completed", "partial"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is not completed (current: {info['status']}).",
+        )
+
+    task_dir = Path(settings.output_dir) / task_id
+    if not task_dir.exists():
+        raise HTTPException(status_code=404, detail="Result files not found.")
+
+    result_files = sorted(task_dir.glob("*_translated.*"))
+    if not result_files:
+        result_files = sorted(
+            p for p in task_dir.iterdir()
+            if p.is_file()
+            and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+            and ("_translated" in p.stem or "_result" in p.stem)
+        )
+
+    if index < 0 or index >= len(result_files):
+        raise HTTPException(status_code=404, detail=f"Image index {index} out of range (0–{len(result_files)-1}).")
+
+    f = result_files[index]
+    _MEDIA_TYPES = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    media = _MEDIA_TYPES.get(f.suffix.lower(), "application/octet-stream")
+    return FileResponse(path=str(f), filename=f.name, media_type=media)

@@ -11,23 +11,23 @@ warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 error()   { echo -e "${RED}[✗]${NC} $*" >&2; }
 
 # ── 옵션 파싱 ─────────────────────────────────────────────────────────────
-PORT=20399
+PORT=20399        # FastAPI 서버 (프론트엔드 + API 통합)
 HOST=0.0.0.0
 SKIP_DOWNLOAD=0
 DEV_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --port)        PORT="$2";        shift 2 ;;
-    --host)        HOST="$2";        shift 2 ;;
+    --port)        PORT="$2";         shift 2 ;;
+    --host)        HOST="$2";         shift 2 ;;
     --skip-download) SKIP_DOWNLOAD=1; shift ;;
-    --dev)         DEV_MODE=1;       shift ;;
+    --dev)         DEV_MODE=1;        shift ;;
     -h|--help)
       echo "사용법: $0 [--port PORT] [--host HOST] [--skip-download] [--dev]"
-      echo "  --port PORT        서버 포트 (기본: 20399)"
-      echo "  --host HOST        바인드 주소 (기본: 0.0.0.0)"
-      echo "  --skip-download    모델/폰트 다운로드 건너뜀"
-      echo "  --dev              uvicorn --reload 개발 모드"
+      echo "  --port PORT           서버 포트 (기본: 20399)"
+      echo "  --host HOST           바인드 주소 (기본: 0.0.0.0)"
+      echo "  --skip-download       모델/폰트 다운로드 건너뜀"
+      echo "  --dev                 uvicorn --reload 개발 모드"
       exit 0 ;;
     *) error "알 수 없는 옵션: $1"; exit 1 ;;
   esac
@@ -114,13 +114,14 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "  MangaLens 서버 시작"
-echo -e "  URL : http://localhost:${PORT}"
+echo -e "  URL: http://localhost:${PORT}"
 echo -e "  종료: Ctrl+C"
 echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# ── FastAPI 서버 (프론트엔드 + API 통합, 포트 20399) ──────────────────────
 if [[ $DEV_MODE -eq 1 ]]; then
-  uv run uvicorn server.main:app --host "$HOST" --port "$PORT" --reload
+  HOST="$HOST" PORT="$PORT" uv run uvicorn server.main:app --host "$HOST" --port "$PORT" --reload
 else
   HOST="$HOST" PORT="$PORT" uv run python -m server.main
 fi

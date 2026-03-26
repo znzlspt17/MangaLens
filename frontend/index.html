@@ -131,7 +131,13 @@
         </div>
       </div>
       <div class="comparison-unavailable" id="comparison-unavailable" style="display: none;">
-        <p>Bulk 업로드의 경우 비교 뷰어를 사용할 수 없습니다.</p>
+        <p>비교 뷰어를 표시하려면 같은 탭에서 파일을 업로드해야 합니다.</p>
+      </div>
+      <!-- Bulk navigation (shown only for multi-image tasks) -->
+      <div class="comparison-nav" id="comparison-nav" style="display: none;" aria-label="이미지 탐색">
+        <button class="comparison-nav-btn" id="comparison-nav-prev" aria-label="이전 이미지" disabled>&#8592;</button>
+        <span class="comparison-nav-label" id="comparison-nav-label">1 / 1</span>
+        <button class="comparison-nav-btn" id="comparison-nav-next" aria-label="다음 이미지">&#8594;</button>
       </div>
     </section>
 

@@ -8,6 +8,7 @@ const Upload = (() => {
 
   let selectedFiles = []; // Array of File objects
   let lastOriginalFile = null;
+  let lastSelectedFiles = []; // snapshot for comparison viewer (bulk)
   let _serverReady = false;
 
   /* --- DOM refs (lazy, cached after first call) ------------- */
@@ -148,6 +149,8 @@ const Upload = (() => {
 
     try {
       lastOriginalFile = selectedFiles.length === 1 ? selectedFiles[0] : null;
+      // Keep a snapshot of all files for bulk comparison viewer
+      lastSelectedFiles = selectedFiles.slice();
       let result;
       if (selectedFiles.length === 1) {
         const fd = new FormData();
@@ -210,6 +213,7 @@ const Upload = (() => {
   }
 
   function getOriginalFile() { return lastOriginalFile; }
+  function getOriginalFiles() { return lastSelectedFiles; }
 
-  return { init, reset, getOriginalFile, setServerReady };
+  return { init, reset, getOriginalFile, getOriginalFiles, setServerReady };
 })();

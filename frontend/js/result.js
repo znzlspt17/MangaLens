@@ -7,6 +7,12 @@ const Result = (() => {
   let sliderDragging = false;
   let originalBlobUrl = null;
 
+  // Bulk comparison state
+  let bulkOriginalFiles = [];
+  let bulkCurrentIndex = 0;
+  let bulkTotal = 0;
+  let bulkBlobUrls = []; // cache blob URLs for original files
+
   function el(id) { return document.getElementById(id); }
 
   /* --- Show result ----------------------------------------- */
@@ -67,13 +73,54 @@ const Result = (() => {
         viewer.style.display = 'none';
       }
       unavailable.style.display = 'none';
-    } else if (total > 1) {
-      viewer.style.display = 'none';
-      unavailable.style.display = '';
+      el('comparison-nav')?.style && (el('comparison-nav').style.display = 'none');
+    } else if (total > 1 && status !== 'failed') {
+      // Bulk comparison viewer — one image at a time with prev/next navigation
+      const origFiles = Upload.getOriginalFiles();
+      if (origFiles && origFiles.length > 0) {
+        // Revoke previous blob URLs
+        bulkBlobUrls.forEach((u) => URL.revokeObjectURL(u));
+        bulkBlobUrls = origFiles.map((f) => URL.createObjectURL(f));
+        bulkOriginalFiles = origFiles;
+        bulkTotal = completed; // show only completed images
+        bulkCurrentIndex = 0;
+        unavailable.style.display = 'none';
+        viewer.style.display = '';
+        _showBulkPage(taskId, 0);
+        _updateBulkNav();
+      } else {
+        viewer.style.display = 'none';
+        unavailable.style.display = '';
+      }
     } else {
       viewer.style.display = 'none';
       unavailable.style.display = 'none';
+      el('comparison-nav')?.style && (el('comparison-nav').style.display = 'none');
     }
+  }
+
+  /* --- Bulk comparison helpers ----------------------------- */
+  function _showBulkPage(taskId, index) {
+    if (index < 0 || index >= bulkBlobUrls.length) return;
+    const origUrl = bulkBlobUrls[index];
+    const transUrl = API.downloadUrl(`/result/${encodeURIComponent(taskId)}/${index}`);
+    showComparison(origUrl, transUrl);
+  }
+
+  function _updateBulkNav() {
+    const nav = el('comparison-nav');
+    if (!nav) return;
+    const label = el('comparison-nav-label');
+    const prevBtn = el('comparison-nav-prev');
+    const nextBtn = el('comparison-nav-next');
+    if (bulkBlobUrls.length <= 1) {
+      nav.style.display = 'none';
+      return;
+    }
+    nav.style.display = '';
+    if (label) label.textContent = `${bulkCurrentIndex + 1} / ${bulkBlobUrls.length}`;
+    if (prevBtn) prevBtn.disabled = bulkCurrentIndex === 0;
+    if (nextBtn) nextBtn.disabled = bulkCurrentIndex === bulkBlobUrls.length - 1;
   }
 
   /* --- Comparison viewer ----------------------------------- */
@@ -198,6 +245,22 @@ const Result = (() => {
       Progress.stop();
       Upload.reset();
       App.showSection('upload');
+    });
+
+    // Bulk navigation
+    el('comparison-nav-prev')?.addEventListener('click', () => {
+      if (bulkCurrentIndex > 0) {
+        bulkCurrentIndex--;
+        _showBulkPage(lastTaskId, bulkCurrentIndex);
+        _updateBulkNav();
+      }
+    });
+    el('comparison-nav-next')?.addEventListener('click', () => {
+      if (bulkCurrentIndex < bulkBlobUrls.length - 1) {
+        bulkCurrentIndex++;
+        _showBulkPage(lastTaskId, bulkCurrentIndex);
+        _updateBulkNav();
+      }
     });
 
     el('new-translate-btn').addEventListener('click', () => {

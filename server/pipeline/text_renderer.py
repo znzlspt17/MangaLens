@@ -17,9 +17,14 @@ _PADDING = 6
 _MIN_FONT_SIZE = 12
 _TEXT_COLOR = (0, 0, 0)
 _STROKE_COLOR = (255, 255, 255)
-_STROKE_WIDTH = 2
-_LINE_HEIGHT_RATIO = 1.4
 _FONT_WEIGHT = 700  # Bold weight for variable fonts
+
+# B-4: Dynamic line height ratio based on number of lines
+_LINE_HEIGHT_RATIO_FEW = 1.3    # 1-2 lines
+_LINE_HEIGHT_RATIO_MANY = 1.2   # 3+ lines
+
+# B-3: Small bubble threshold — no scale-down below this size
+_SMALL_BUBBLE_THRESHOLD = 60
 
 # P2: Module-level font object cache keyed by (font_path, size).
 # _find_best_font_size() calls _load_font() O(log N) times during binary
@@ -122,28 +127,51 @@ class TextRenderer:
         use_vertical = False
 
         font_size = self._find_best_font_size(text, usable_w, usable_h, use_vertical)
-        # Apply a scale-down factor so text doesn't fill bbox edge-to-edge
-        font_size = max(int(font_size * 0.85), _MIN_FONT_SIZE)
+        # B-3: Adaptive scale-down — skip for small bubbles where space is precious
+        if bw > _SMALL_BUBBLE_THRESHOLD and bh > _SMALL_BUBBLE_THRESHOLD:
+            font_size = max(int(font_size * 0.85), _MIN_FONT_SIZE)
         font = self._load_font(font_size)
 
-        # Pre-compute lines to know actual height needed (prevents silent clipping)
-        lines = self._wrap_text(text, font, usable_w) if not use_vertical else None
-        line_height = int(font_size * _LINE_HEIGHT_RATIO)
+        # B-3: Adaptive stroke width proportional to font size
+        stroke_width = max(1, font_size // 20)
 
+        # Pre-compute lines to know actual height needed
+        # Subtract stroke width from both sides so the stroke outline never
+        # bleeds past the overlay edge (left/right clipping fix).
+        wrap_w = max(usable_w - 2 * stroke_width, 1)
+        lines = self._wrap_text(text, font, wrap_w) if not use_vertical else None
+
+        # B-4: Dynamic line height ratio
+        num_lines = len(lines) if lines else 1
+        line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
+        line_height = int(font_size * line_height_ratio)
+
+        # Narrow-bubble fix: reduce font size until text fits inside bh.
+        # Never expand the overlay beyond the actual bubble height — doing so
+        # causes text to bleed outside the speech bubble.
         if not use_vertical and lines is not None:
             needed_h = len(lines) * line_height + _PADDING * 2
-            actual_bh = max(bh, needed_h)
-        else:
-            actual_bh = bh
+            while needed_h > bh and font_size > _MIN_FONT_SIZE:
+                font_size -= 1
+                font = self._load_font(font_size)
+                stroke_width = max(1, font_size // 20)
+                wrap_w = max(usable_w - 2 * stroke_width, 1)
+                lines = self._wrap_text(text, font, wrap_w)
+                num_lines = len(lines)
+                line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
+                line_height = int(font_size * line_height_ratio)
+                needed_h = len(lines) * line_height + _PADDING * 2
+
+        actual_bh = bh  # Never exceed bubble bounds
 
         # Create RGBA overlay — may be taller than bbox to prevent text clipping
         overlay = Image.new("RGBA", (bw, actual_bh), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         if use_vertical:
-            self._draw_vertical(draw, font, text, usable_w, actual_bh - _PADDING * 2, font_size)
+            self._draw_vertical(draw, font, text, usable_w, actual_bh - _PADDING * 2, font_size, stroke_width)
         else:
-            self._draw_horizontal(draw, font, lines, usable_w, actual_bh - _PADDING * 2, font_size)
+            self._draw_horizontal(draw, font, lines or [""], usable_w, actual_bh - _PADDING * 2, font_size, stroke_width)
 
         return np.array(overlay, dtype=np.uint8), font_size
 
@@ -155,22 +183,27 @@ class TextRenderer:
         usable_w: int,
         usable_h: int,
         font_size: int,
+        stroke_width: int = 2,
     ) -> None:
         """Draw lines of text horizontally, centered in the bbox."""
-        line_height = int(font_size * _LINE_HEIGHT_RATIO)
-        total_text_height = line_height * len(lines)
+        num_lines = len(lines)
+        line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
+        line_height = int(font_size * line_height_ratio)
+        total_text_height = line_height * num_lines
         y_start = _PADDING + max((usable_h - total_text_height) // 2, 0)
 
         for i, line in enumerate(lines):
             line_w = font.getlength(line)
-            x = _PADDING + max((usable_w - int(line_w)) // 2, 0)
+            # Ensure x is at least stroke_width so the left stroke outline
+            # never falls outside (or right at the edge of) the overlay.
+            x = max(stroke_width, _PADDING + max((usable_w - int(line_w)) // 2, 0))
             y = y_start + i * line_height
             draw.text(
                 (x, y),
                 line,
                 fill=(*_TEXT_COLOR, 255),
                 font=font,
-                stroke_width=_STROKE_WIDTH,
+                stroke_width=stroke_width,
                 stroke_fill=(*_STROKE_COLOR, 255),
             )
 
@@ -182,9 +215,10 @@ class TextRenderer:
         usable_w: int,
         usable_h: int,
         font_size: int,
+        stroke_width: int = 2,
     ) -> None:
         """Draw text vertically: columns right-to-left, 1 char per cell."""
-        col_width = int(font_size * _LINE_HEIGHT_RATIO)
+        col_width = int(font_size * _LINE_HEIGHT_RATIO_FEW)
         line_height = col_width
 
         # How many columns actually fit in usable_w
@@ -209,7 +243,7 @@ class TextRenderer:
             x = x_start - col_idx * col_width
             if x < _PADDING:
                 break
-            line_height = int(font_size * _LINE_HEIGHT_RATIO)
+            line_height = int(font_size * _LINE_HEIGHT_RATIO_FEW)
             total_col_height = line_height * len(col_text)
             y_offset = _PADDING + max((usable_h - total_col_height) // 2, 0)
             for char_idx, ch in enumerate(col_text):
@@ -221,7 +255,7 @@ class TextRenderer:
                     ch,
                     fill=(*_TEXT_COLOR, 255),
                     font=font,
-                    stroke_width=_STROKE_WIDTH,
+                    stroke_width=stroke_width,
                     stroke_fill=(*_STROKE_COLOR, 255),
                 )
 
@@ -258,16 +292,20 @@ class TextRenderer:
     ) -> bool:
         """Check whether text at the given font size fits in the usable area."""
         font = self._load_font(font_size)
-        line_height = int(font_size * _LINE_HEIGHT_RATIO)
 
         if vertical:
+            line_height = int(font_size * _LINE_HEIGHT_RATIO_MANY)
             chars_per_col = max(usable_h // line_height, 1)
             num_cols = -(-len(text) // chars_per_col)  # ceil division
-            col_width = int(font_size * _LINE_HEIGHT_RATIO)
+            col_width = int(font_size * _LINE_HEIGHT_RATIO_FEW)
             return num_cols * col_width <= usable_w
         else:
             lines = self._wrap_text(text, font, usable_w)
-            total_height = line_height * len(lines)
+            num_lines = len(lines)
+            # Use the same ratio that render() will actually use
+            ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
+            line_height = int(font_size * ratio)
+            total_height = line_height * num_lines
             return total_height <= usable_h
 
     def _wrap_text(
@@ -276,23 +314,48 @@ class TextRenderer:
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
         max_width: int,
     ) -> list[str]:
-        """Wrap Korean/CJK text character-by-character to fit within max_width."""
+        """Wrap Korean text with word-level awareness.
+
+        Breaks preferably at spaces, commas, and periods to keep words
+        intact.  Falls back to character-level breaking only when a
+        single word exceeds *max_width*.
+        """
         lines: list[str] = []
-        current_line = ""
 
-        for ch in text:
-            if ch == "\n":
-                lines.append(current_line)
-                current_line = ""
-                continue
-            test_line = current_line + ch
-            if font.getlength(test_line) > max_width and current_line:
-                lines.append(current_line)
-                current_line = ch
-            else:
-                current_line = test_line
-
-        if current_line:
-            lines.append(current_line)
+        for paragraph in text.split("\n"):
+            words = self._split_words(paragraph)
+            current_line = ""
+            for word in words:
+                test_line = current_line + word
+                if font.getlength(test_line) > max_width and current_line:
+                    lines.append(current_line.rstrip())
+                    current_line = word.lstrip()
+                elif font.getlength(test_line) > max_width and not current_line:
+                    # Single word exceeds max_width — break by character
+                    for ch in word:
+                        test_ch = current_line + ch
+                        if font.getlength(test_ch) > max_width and current_line:
+                            lines.append(current_line)
+                            current_line = ch
+                        else:
+                            current_line = test_ch
+                else:
+                    current_line = test_line
+            if current_line:
+                lines.append(current_line.rstrip())
 
         return lines if lines else [""]
+
+    @staticmethod
+    def _split_words(text: str) -> list[str]:
+        """Split Korean/CJK text into word-level chunks for wrapping.
+
+        Splits at spaces (keeping the space attached to the preceding
+        chunk) and after punctuation so line breaks appear at natural
+        boundaries rather than in the middle of a word.
+        """
+        import re
+        # Split keeping delimiters attached: "안녕하세요, 반갑습니다!"
+        # → ["안녕하세요, ", "반갑습니다!"]
+        tokens = re.split(r'(?<=[\s,\.!?~…·\-、。！？])', text)
+        return [t for t in tokens if t]

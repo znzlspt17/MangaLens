@@ -38,7 +38,8 @@ const Logger = (() => {
 })();
 
 const API = (() => {
-  const BASE = '/api';
+  // FastAPI 백엔드가 프론트엔드 정적 파일도 함께 서빙 (동일 포트)
+  const BASE = `${location.protocol}//${location.host}/api`;
 
   /**
    * Generic fetch wrapper with JSON parsing and error handling.

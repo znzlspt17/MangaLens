@@ -26,7 +26,91 @@ logger = logging.getLogger(__name__)
 _MODEL_INPUT_SIZE = 1024
 _CONF_THRESH = 0.35
 _NMS_IOU = 0.45
+_MERGE_IOU = 0.25  # post-NMS overlap threshold: merge boxes that overlap this much
 _MIN_AREA = 100
+
+
+def _merge_overlapping_boxes(
+    boxes: "np.ndarray",
+    scores: "np.ndarray",
+    cls_ids: "np.ndarray",
+    iou_thresh: float,
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+    """Iteratively merge post-NMS boxes whose IoU exceeds *iou_thresh*.
+
+    When two boxes overlap enough (e.g., a tall speech balloon fragmented
+    into two detections), they are merged into the union bounding box and
+    the higher-confidence class id is kept.  Merging repeats until no more
+    pairs exceed the threshold.
+    """
+    if len(boxes) == 0:
+        return boxes, scores, cls_ids
+
+    merged = True
+    boxes = boxes.copy()
+    scores = scores.copy()
+    cls_ids = cls_ids.copy()
+
+    while merged:
+        merged = False
+        keep = list(range(len(boxes)))
+        used = [False] * len(boxes)
+        new_boxes, new_scores, new_cls = [], [], []
+
+        for i in range(len(boxes)):
+            if used[i]:
+                continue
+            b1 = boxes[i]
+            best_j = -1
+            best_iou = iou_thresh
+            for j in range(i + 1, len(boxes)):
+                if used[j]:
+                    continue
+                b2 = boxes[j]
+                # Compute IoU
+                ix1 = max(b1[0], b2[0])
+                iy1 = max(b1[1], b2[1])
+                ix2 = min(b1[2], b2[2])
+                iy2 = min(b1[3], b2[3])
+                inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                if inter == 0:
+                    continue
+                area1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+                area2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+                union = area1 + area2 - inter
+                iou = inter / union if union > 0 else 0.0
+                if iou > best_iou:
+                    best_iou = iou
+                    best_j = j
+            if best_j >= 0:
+                b2 = boxes[best_j]
+                merged_box = np.array([
+                    min(b1[0], b2[0]),
+                    min(b1[1], b2[1]),
+                    max(b1[2], b2[2]),
+                    max(b1[3], b2[3]),
+                ], dtype=boxes.dtype)
+                new_boxes.append(merged_box)
+                new_scores.append(max(scores[i], scores[best_j]))
+                # Keep the class of the larger box
+                if (b1[2]-b1[0])*(b1[3]-b1[1]) >= (b2[2]-b2[0])*(b2[3]-b2[1]):
+                    new_cls.append(cls_ids[i])
+                else:
+                    new_cls.append(cls_ids[best_j])
+                used[i] = True
+                used[best_j] = True
+                merged = True
+            else:
+                new_boxes.append(b1)
+                new_scores.append(scores[i])
+                new_cls.append(cls_ids[i])
+                used[i] = True
+
+        boxes = np.array(new_boxes, dtype=boxes.dtype) if new_boxes else boxes[:0]
+        scores = np.array(new_scores, dtype=scores.dtype) if new_scores else scores[:0]
+        cls_ids = np.array(new_cls, dtype=cls_ids.dtype) if new_cls else cls_ids[:0]
+
+    return boxes, scores, cls_ids
 
 
 @dataclass
@@ -216,6 +300,11 @@ class BubbleDetector:
         boxes = boxes[keep].cpu().numpy()
         scores = scores[keep].cpu().numpy()
         cls_ids = cls_id[keep].cpu().numpy()
+
+        # Post-NMS: merge remaining boxes that still overlap significantly.
+        # This handles cases where one speech balloon is detected as two
+        # overlapping boxes (e.g., a tall vertical bubble split into two).
+        boxes, scores, cls_ids = _merge_overlapping_boxes(boxes, scores, cls_ids, _MERGE_IOU)
 
         sx, sy = orig_w / _MODEL_INPUT_SIZE, orig_h / _MODEL_INPUT_SIZE
         bubbles: list[BubbleInfo] = []

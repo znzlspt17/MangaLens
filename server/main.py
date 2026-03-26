@@ -149,22 +149,23 @@ app = FastAPI(
 )
 
 # CORS middleware
-_allowed_origins = settings.get_allowed_origins()
-if _allowed_origins:
-    if "*" in _allowed_origins:
-        logger.warning(
-            "ALLOWED_ORIGINS contains '*'; credentialed CORS is disabled. "
-            "Set explicit origins before public deployment."
-        )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_allowed_origins,
-        allow_credentials=settings.allow_cors_credentials(),
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+# 프론트엔드(20399)와 FastAPI(20400)가 분리되므로 기본적으로 20399를 허용
+_DEFAULT_FRONTEND_ORIGIN = "http://localhost:20399"  # same port as server
+_allowed_origins = settings.get_allowed_origins() or [_DEFAULT_FRONTEND_ORIGIN]
+if "*" in _allowed_origins:
+    logger.warning(
+        "ALLOWED_ORIGINS contains '*'; credentialed CORS is disabled. "
+        "Set explicit origins before public deployment."
     )
-else:
-    logger.info("CORS middleware disabled because ALLOWED_ORIGINS is not configured")
+_cors_credentials = "*" not in _allowed_origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=_cors_credentials,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
+logger.info("CORS allowed origins: %s", _allowed_origins)
 
 
 # ---------------------------------------------------------------------------
