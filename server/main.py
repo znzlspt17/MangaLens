@@ -160,7 +160,7 @@ if _allowed_origins:
         allow_origins=_allowed_origins,
         allow_credentials=settings.allow_cors_credentials(),
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "X-DeepL-Key", "X-Google-Key", "X-Session-Id"],
+        allow_headers=["Content-Type"],
     )
 else:
     logger.info("CORS middleware disabled because ALLOWED_ORIGINS is not configured")
@@ -169,11 +169,10 @@ else:
 # Routers
 # ---------------------------------------------------------------------------
 
-from server.routers import result, settings as settings_router, upload, ws  # noqa: E402
+from server.routers import result, upload, ws  # noqa: E402
 
 app.include_router(upload.router)
 app.include_router(result.router)
-app.include_router(settings_router.router)
 app.include_router(ws.router)
 
 

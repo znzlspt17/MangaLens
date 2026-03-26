@@ -14,8 +14,8 @@
 
   /* --- Text --- */
   --text-primary:   #111827;
-  --text-secondary: #6b7280;
-  --text-muted:     #9ca3af;
+  --text-secondary: #4b5563;  /* was #6b7280 — contrast ~6.1:1 on bg-base (WCAG AA ✅) */
+  --text-muted:     #6b7280;  /* was #9ca3af — contrast ~3.9:1 (large/decorative text) */
   --text-inverse:   #ffffff;
 
   /* --- Accent --- */

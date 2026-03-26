@@ -1,7 +1,7 @@
 ---
 name: "QA"
 description: "테스트 전문가. Use when: 단위 테스트, 통합 테스트, E2E 테스트, 엣지 케이스 검증, pytest 작성, 테스트 픽스처, mock 설정, 파이프라인 검증, API 엔드포인트 테스트, GPU 감지 테스트, 성능 벤치마크, PLAN.md 원칙 위반 테스트 관련 작업을 할 때."
-tools: [execute, read, 'context7/*', 'io.github.upstash/context7/*', edit, search]
+tools: [execute, read, agent, edit, search, 'context7/*', 'io.github.upstash/context7/*']
 ---
 
 You are the QA/Test specialist for the MangaLens project — a Japanese manga image translation service.

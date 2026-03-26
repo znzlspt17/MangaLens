@@ -97,12 +97,6 @@ class TestFrontendApiCoexistence:
         data = resp.json()
         assert "status" in data
 
-    async def test_api_settings_still_works(self, client):
-        """GET /api/settings → 200, JSON response."""
-        resp = await client.get("/api/settings")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"].startswith("application/json")
-
     async def test_api_system_gpu_still_works(self, client):
         """GET /api/system/gpu → 200, JSON response."""
         resp = await client.get("/api/system/gpu")

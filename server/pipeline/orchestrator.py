@@ -31,13 +31,23 @@ _MIN_OCR_CONFIDENCE = 0.3
 # Global model cache — avoids reloading 100s of MB per request (§13 GPU memory)
 # ---------------------------------------------------------------------------
 _model_cache: dict[str, object] = {}
+_model_cache_lock: asyncio.Lock = asyncio.Lock()  # P0: prevents double-loading on concurrent first requests
 
 
-def _get_cached(cls: type, key: str, **kwargs) -> object:
-    """Return a cached instance of *cls*, creating on first call."""
-    if key not in _model_cache:
-        _model_cache[key] = cls(**kwargs)
-        logger.info("Model cached: %s", key)
+async def _get_cached(cls: type, key: str, **kwargs) -> object:
+    """Return a cached instance of *cls*, creating on first call.
+
+    Uses double-checked locking so that concurrent pipeline starts do not
+    race to instantiate the same model (which would waste VRAM / cause OOM).
+    """
+    # Fast path — model already loaded
+    if key in _model_cache:
+        return _model_cache[key]
+    # Slow path — acquire lock and re-check (double-checked locking)
+    async with _model_cache_lock:
+        if key not in _model_cache:
+            _model_cache[key] = cls(**kwargs)
+            logger.info("Model cached: %s", key)
     return _model_cache[key]
 
 
@@ -56,8 +66,6 @@ def clear_model_cache() -> None:
 class UserTranslationSettings:
     """Per-request translation settings supplied by the user."""
 
-    deepl_key: str = ""
-    google_key: str = ""
     target_lang: str = "KO"
     source_lang: str = "JA"
 
@@ -136,11 +144,28 @@ async def run_pipeline(
 
     # ── Stage 1: Bubble Detection ──────────────────────────────────────
     logger.info("[1/7] Detecting bubbles")
-    detector = _get_cached(BubbleDetector, "bubble_detector", device=device)
-    bubbles_raw = await detector.detect(original)
+    _using_magi = False
+    if _server_settings.use_magi_detector:
+        try:
+            from server.pipeline.magi_detector import MagiDetector
+            magi = await _get_cached(MagiDetector, "magi_detector", device=device)
+            if magi._model_loaded:
+                bubbles_raw = await magi.detect(original)
+                _using_magi = True
+            else:
+                logger.info("Magi v2 not available; falling back to YOLOv5")
+        except Exception:
+            logger.warning("Magi v2 import failed; falling back to YOLOv5", exc_info=True)
 
-    # Sort in reading order (P1: right-to-left, top-to-bottom)
-    bubbles = sort_bubbles_rtl(bubbles_raw)
+    if not _using_magi:
+        detector = await _get_cached(BubbleDetector, "bubble_detector", device=device)
+        bubbles_raw = await detector.detect(original)
+
+    # Sort in reading order — skip if Magi already sorted
+    if _using_magi:
+        bubbles = bubbles_raw  # Magi sorts by panels internally
+    else:
+        bubbles = sort_bubbles_rtl(bubbles_raw)
     logger.info("  Found %d bubbles", len(bubbles))
 
     # Filter out effect-type bubbles (sound effects are NOT translated)
@@ -151,7 +176,7 @@ async def run_pipeline(
 
     # ── Stage 2: Crop & Upscale ────────────────────────────────────────
     logger.info("[2/7] Cropping & upscaling")
-    preprocessor = _get_cached(Preprocessor, "preprocessor", device=device)
+    preprocessor = await _get_cached(Preprocessor, "preprocessor", device=device)
     contexts: list[_BubbleContext] = []
 
     for bubble in translatable:
@@ -163,7 +188,7 @@ async def run_pipeline(
 
     # ── Stage 3: OCR ───────────────────────────────────────────────────
     logger.info("[3/7] Running OCR")
-    ocr_engine = _get_cached(OCREngine, "ocr_engine", device=device)
+    ocr_engine = await _get_cached(OCREngine, "ocr_engine", device=device)
 
     for ctx in contexts:
         assert ctx.crop is not None
@@ -188,12 +213,11 @@ async def run_pipeline(
     # ── Stage 4 & 5: Translation + Text Erasure (parallel) ─────────────
     logger.info("[4-5/7] Translation & text erasure (parallel)")
     translator = Translator(
-        deepl_key=settings.deepl_key,
-        google_key=settings.google_key,
         target_lang=settings.target_lang,
         source_lang=settings.source_lang,
+        device=device,
     )
-    text_eraser = _get_cached(TextEraser, "text_eraser", device=device)
+    text_eraser = await _get_cached(TextEraser, "text_eraser", device=device)
 
     async def _do_translation() -> list[str]:
         if not texts_to_translate:
@@ -228,7 +252,7 @@ async def run_pipeline(
             continue
         if tr_idx < len(translated_texts):
             ctx.translated_text = translated_texts[tr_idx]
-            ctx.translation_engine = "deepl"  # TODO: track actual engine
+            ctx.translation_engine = "hunyuan"  # local Hunyuan-MT-7B
             tr_idx += 1
         else:
             # Translation failed for this bubble
@@ -237,7 +261,7 @@ async def run_pipeline(
 
     # ── Stage 6: Text Rendering ────────────────────────────────────────
     logger.info("[6/7] Rendering translated text")
-    renderer = _get_cached(TextRenderer, "text_renderer", font_dir=_server_settings.font_dir)
+    renderer = await _get_cached(TextRenderer, "text_renderer", font_dir=_server_settings.font_dir)
     rendered_bubbles: list[RenderedBubble] = []
 
     for ctx in contexts:

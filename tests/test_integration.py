@@ -24,7 +24,6 @@ import pytest
 from httpx._transports.asgi import ASGITransport
 from PIL import Image
 
-from server.schemas.models import MAX_USER_API_KEY_LENGTH
 from server.state import task_store
 
 
@@ -61,15 +60,6 @@ def _clean_task_store():
     task_store.clear()
 
 
-@pytest.fixture(autouse=True)
-def _clean_session_store():
-    """Ensure session_store is clean before and after every test."""
-    from server.routers.settings import session_store
-    session_store.clear()
-    yield
-    session_store.clear()
-
-
 @pytest.fixture()
 def mock_gpu():
     """Mock GPU detection to return CPU fallback."""
@@ -102,118 +92,6 @@ async def client(app):
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-
-
-# ===================================================================
-# 1. TestSettingsEndpoints
-# ===================================================================
-
-
-class TestSettingsEndpoints:
-    """POST/GET /api/settings — session-based key management."""
-
-    async def test_post_settings_sets_api_keys(self, client: httpx.AsyncClient):
-        """POST stores keys and returns masked values."""
-        resp = await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "dl-1234567890abcdef", "google_api_key": "gk-0987654321fedcba"},
-            headers={"X-Session-Id": "sess-001"},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        # Keys must be masked (first 4 + last 4 visible)
-        assert body["deepl_api_key"] is not None
-        assert body["deepl_api_key"].startswith("dl-1")
-        assert "****" in body["deepl_api_key"]
-        assert body["deepl_api_key"].endswith("cdef")
-
-    async def test_get_settings_returns_masked_keys(self, client: httpx.AsyncClient):
-        """GET returns previously stored masked keys."""
-        # First, set keys
-        await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "dl-1234567890abcdef"},
-            headers={"X-Session-Id": "sess-002"},
-        )
-        # Then, read back
-        resp = await client.get(
-            "/api/settings",
-            headers={"X-Session-Id": "sess-002"},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["deepl_api_key"] is not None
-        assert "****" in body["deepl_api_key"]
-
-    async def test_get_settings_no_session_returns_empty(self, client: httpx.AsyncClient):
-        """GET without prior session returns null keys."""
-        resp = await client.get("/api/settings")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["deepl_api_key"] is None
-        assert body["google_api_key"] is None
-
-    async def test_sessions_are_isolated(self, client: httpx.AsyncClient):
-        """Different session IDs have independent settings."""
-        await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "key-for-session-A-1234"},
-            headers={"X-Session-Id": "sess-A"},
-        )
-        await client.post(
-            "/api/settings",
-            json={"google_api_key": "key-for-session-B-5678"},
-            headers={"X-Session-Id": "sess-B"},
-        )
-        # Session A should not have google_api_key
-        resp_a = await client.get("/api/settings", headers={"X-Session-Id": "sess-A"})
-        assert resp_a.json()["google_api_key"] is None
-        assert resp_a.json()["deepl_api_key"] is not None
-
-        # Session B should not have deepl_api_key
-        resp_b = await client.get("/api/settings", headers={"X-Session-Id": "sess-B"})
-        assert resp_b.json()["deepl_api_key"] is None
-        assert resp_b.json()["google_api_key"] is not None
-
-    @pytest.mark.parametrize(
-        "session_id",
-        ["bad session id", "sess/id", "sess$id", "x" * 129],
-    )
-    async def test_invalid_session_id_rejected(
-        self, client: httpx.AsyncClient, session_id: str
-    ):
-        """Invalid session identifiers are rejected before creating session state."""
-        resp = await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "dl-1234567890abcdef"},
-            headers={"X-Session-Id": session_id},
-        )
-        assert resp.status_code == 400
-        assert resp.json()["detail"] == "Invalid session ID."
-
-    async def test_oversized_api_key_rejected(self, client: httpx.AsyncClient):
-        """Oversized API keys are rejected by request validation."""
-        resp = await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "x" * (MAX_USER_API_KEY_LENGTH + 1)},
-            headers={"X-Session-Id": "sess-oversized"},
-        )
-        assert resp.status_code == 422
-
-    async def test_settings_cookie_uses_secure_flag_by_default(
-        self, client: httpx.AsyncClient
-    ):
-        """Deployment-safe default should always mark the session cookie Secure."""
-        resp = await client.post(
-            "/api/settings",
-            json={"deepl_api_key": "dl-1234567890abcdef"},
-            headers={"X-Session-Id": "sess-secure"},
-        )
-        assert resp.status_code == 200
-        cookie = resp.headers.get("set-cookie", "")
-        assert "Secure" in cookie
-
-
 class TestDeploymentSafetyConfig:
     """Deployment-related configuration safety checks."""
 

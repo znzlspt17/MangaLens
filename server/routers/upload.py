@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import uuid
 import zipfile
 import io
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, BackgroundTasks
+from fastapi import APIRouter, File, HTTPException, UploadFile, BackgroundTasks
 
 from server.config import settings
 from server.pipeline.orchestrator import run_pipeline, UserTranslationSettings
-from server.routers.settings import session_store
 from server.schemas.models import ErrorResponse, UploadResponse
 from server.utils.image import (
     ALLOWED_EXTENSIONS,
@@ -21,7 +21,7 @@ from server.utils.image import (
     validate_image_file,
     save_upload,
 )
-from server.state import task_store
+from server.state import task_store, notify_task_changed
 from server.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,51 +30,32 @@ router = APIRouter(prefix="/api", tags=["upload"])
 
 # Semaphore to limit concurrent pipeline executions
 _pipeline_semaphore: asyncio.Semaphore | None = None
+_semaphore_lock: asyncio.Lock = asyncio.Lock()  # P1: prevents double-init race on first concurrent requests
 
 
-def _get_semaphore() -> asyncio.Semaphore:
+async def _get_semaphore() -> asyncio.Semaphore:
     global _pipeline_semaphore
-    if _pipeline_semaphore is None:
-        limit = settings.max_concurrent_tasks
-        # VRAM 기반 자동 조정 (PLAN.md §13)
-        if limit == 1:  # 기본값인 경우 VRAM 기반 자동 조정
-            from server.gpu import get_gpu_info
-            gpu = get_gpu_info()
-            if gpu.vram_mb >= 8192:
-                limit = 2
-                logger.info("VRAM %d MB >= 8GB — auto-set max_concurrent_tasks=2", gpu.vram_mb)
-        _pipeline_semaphore = asyncio.Semaphore(limit)
+    # Fast path
+    if _pipeline_semaphore is not None:
+        return _pipeline_semaphore
+    # Slow path — only one coroutine initialises the semaphore
+    async with _semaphore_lock:
+        if _pipeline_semaphore is None:
+            limit = settings.max_concurrent_tasks
+            # VRAM 기반 자동 조정 (PLAN.md §13)
+            if limit == 1:  # 기본값인 경우 VRAM 기반 자동 조정
+                from server.gpu import get_gpu_info
+                gpu = get_gpu_info()
+                if gpu.vram_mb >= 8192:
+                    limit = 2
+                    logger.info("VRAM %d MB >= 8GB — auto-set max_concurrent_tasks=2", gpu.vram_mb)
+            _pipeline_semaphore = asyncio.Semaphore(limit)
     return _pipeline_semaphore
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _extract_user_settings(request: Request) -> UserTranslationSettings:
-    """Build UserTranslationSettings from request headers / session / server defaults.
-
-    Priority: request header > session key > server .env default.
-    """
-    deepl_key = request.headers.get("x-deepl-key", "")
-    google_key = request.headers.get("x-google-key", "")
-
-    if not deepl_key or not google_key:
-        session_id = request.headers.get("x-session-id") or request.cookies.get("session_id")
-        if session_id and session_id in session_store:
-            session_data = session_store[session_id]
-            if not deepl_key:
-                deepl_key = session_data.get("deepl_api_key", "")
-            if not google_key:
-                google_key = session_data.get("google_api_key", "")
-
-    if not deepl_key:
-        deepl_key = settings.deepl_api_key
-    if not google_key:
-        google_key = settings.google_api_key
-
-    return UserTranslationSettings(deepl_key=deepl_key, google_key=google_key)
 
 
 # ---------------------------------------------------------------------------
@@ -92,11 +73,12 @@ async def _run_pipeline(
     Each image is processed independently — a single failure does not
     abort remaining images (PLAN.md §11).
     """
-    sem = _get_semaphore()
+    sem = await _get_semaphore()
     async with sem:
         task_store[task_id]["status"] = "processing"
         task_store[task_id]["total_images"] = len(image_paths)
         task_store[task_id]["result_paths"] = []
+        await notify_task_changed(task_id)
 
         ts = user_settings or UserTranslationSettings()
         output_base = Path(settings.output_dir) / task_id
@@ -128,6 +110,7 @@ async def _run_pipeline(
             task_store[task_id]["progress"] = (
                 (completed + failed) / len(image_paths) * 100.0
             )
+            await notify_task_changed(task_id)
 
         if failed == len(image_paths):
             task_store[task_id]["status"] = "failed"
@@ -135,6 +118,7 @@ async def _run_pipeline(
             task_store[task_id]["status"] = "partial"
         else:
             task_store[task_id]["status"] = "completed"
+        await notify_task_changed(task_id)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +131,6 @@ async def _run_pipeline(
     responses={400: {"model": ErrorResponse}, 413: {"model": ErrorResponse}},
 )
 async def upload_single(
-    request: Request,
     file: Annotated[UploadFile, File(description="Manga image file")],
     background_tasks: BackgroundTasks,
 ) -> UploadResponse:
@@ -158,8 +141,9 @@ async def upload_single(
     except ImageValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Generate task ID
-    task_id = uuid.uuid4().hex
+    # Generate task ID — datetime for human readability + short UUID suffix for uniqueness
+    now = datetime.now(timezone.utc).astimezone()
+    task_id = now.strftime("%Y%m%d_%H%M%S_%f")[:-3] + f"_{uuid.uuid4().hex[:6]}"
 
     # Reset file position and save
     file.file.seek(0)
@@ -175,8 +159,7 @@ async def upload_single(
     }
 
     # Schedule pipeline in background
-    user_settings = _extract_user_settings(request)
-    background_tasks.add_task(_run_pipeline, task_id, [saved_path], user_settings)
+    background_tasks.add_task(_run_pipeline, task_id, [saved_path], UserTranslationSettings())
 
     return UploadResponse(task_id=task_id, status="queued")
 
@@ -198,7 +181,6 @@ _MAX_BULK_IMAGES = 100
     },
 )
 async def upload_bulk(
-    request: Request,
     files: Annotated[
         list[UploadFile],
         File(description="Multiple manga image files or a single ZIP"),
@@ -206,7 +188,8 @@ async def upload_bulk(
     background_tasks: BackgroundTasks,
 ) -> UploadResponse:
     """Upload multiple manga images (multipart) or a single ZIP archive."""
-    task_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).astimezone()
+    task_id = now.strftime("%Y%m%d_%H%M%S_%f")[:-3] + f"_{uuid.uuid4().hex[:6]}"
     image_paths: list[Path] = []
 
     # Detect ZIP upload (single file with .zip extension)
@@ -271,7 +254,7 @@ async def upload_bulk(
         "failed_images": 0,
     }
 
-    user_settings = _extract_user_settings(request)
+    user_settings = UserTranslationSettings()
     background_tasks.add_task(_run_pipeline, task_id, image_paths, user_settings)
 
     return UploadResponse(task_id=task_id, status="queued")

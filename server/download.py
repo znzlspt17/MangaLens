@@ -37,6 +37,12 @@ MODELS: list[dict[str, str]] = [
         "dest_dir": "model",
     },
     {
+        "name": "Real-ESRGAN x4plus-anime6B",
+        "filename": "RealESRGAN_x4plus_anime_6B.pth",
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+        "dest_dir": "model",
+    },
+    {
         "name": "LaMa big-lama",
         "filename": "big-lama.pt",
         "url": "https://huggingface.co/signature-ai/big-lama/resolve/main/big-lama.pt",

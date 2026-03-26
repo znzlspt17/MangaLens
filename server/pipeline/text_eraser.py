@@ -133,9 +133,14 @@ class TextEraser:
         with torch.no_grad():
             result = self._model(img_t, mask_t)
 
+        # P1: explicitly release GPU tensors to prevent VRAM accumulation
+        out_np = result[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+        del img_t, mask_t, result
+        if self.device != "cpu":
+            torch.cuda.empty_cache()
+
         # tensor → numpy
-        out = result[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
-        out = (out * 255).astype(np.uint8)
+        out = (out_np * 255).astype(np.uint8)
 
         # Remove padding
         if pad_h > 0 or pad_w > 0:

@@ -42,7 +42,9 @@ const Progress = (() => {
           Result.show(taskId, data);
           App.showSection('result');
         }
-      } catch { /* ignore malformed messages */ }
+      } catch (err) {
+        console.warn('[Progress] Malformed WebSocket message:', event.data, err);
+      }
     });
 
     ws.addEventListener('close', () => {

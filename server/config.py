@@ -12,12 +12,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings loaded from environment variables / .env file."""
 
-    # API Keys (server defaults, overridden by user session keys)
-    deepl_api_key: str = ""
-    google_api_key: str = ""
-
     # GPU
     gpu_backend: str = "auto"  # auto | cuda | rocm | cpu
+
+    # Upscaler
+    upscaler_variant: str = "anime_6b"  # anime_6b | x4plus
+
+    # Detector
+    use_magi_detector: bool = False  # True → Magi v2, False → YOLOv5
+    magi_vram_threshold_mb: int = 4096  # Magi v2 requires ≥4GB VRAM
 
     # Server
     max_upload_size: int = 52_428_800  # 50 MB

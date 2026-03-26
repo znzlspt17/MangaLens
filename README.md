@@ -37,7 +37,7 @@
 
 | 라이브러리 | 버전 | 용도 |
 |-----------|------|------|
-| **httpx** | ≥0.28 | 비동기 HTTP 클라이언트 (번역 API 호출) |
+| **httpx** | ≥0.28 | 비동기 HTTP 클라이언트 (모델/폰트 다운로드) |
 | **pydantic** | ≥2.10 | 요청/응답 데이터 검증 |
 | **pydantic-settings** | ≥2.7 | 환경변수 설정 관리 |
 | **websockets** | ≥14.0 | 실시간 진행률 전송 |
@@ -59,9 +59,9 @@
 | ② 이미지 업스케일 | **Real-ESRGAN** | RRDBNet (ESRGAN) | ~64MB | 저해상도 크롭 업스케일 (OCR 정확도 향상) |
 | ③ OCR | **manga-ocr** | TrOCR (ViT + GPT Decoder) | ~450MB | 일본어 세로쓰기 텍스트 인식 |
 | ⑤ 텍스트 제거 | **LaMa** | FFC + ResNet | ~200MB | 말풍선 내 텍스트 인페인팅 (배경 복원) |
-| ④ 번역 | **DeepL API** / Google API | — | 외부 API | JA → KO 배치 번역 (문맥 유지) |
+| ④ 번역 | **Hunyuan-MT-7B** | CausalLM (7B파라미터) | ~14GB VRAM | JA → KO 로컬 인퍼런스 (WMT25 1위) |
 
-> 4개 로컬 모델 합계 약 **726MB** VRAM. 첫 요청 시 1회 로드 후 글로벌 캐시에 유지됩니다.
+> 4개 로컬 모델 합계 약 **726MB** VRAM + Hunyuan-MT-7B ~14GB VRAM. 첫 요청 시 1회 로드 후 글로뱌 캐시에 유지됩니다.
 
 ---
 
@@ -92,15 +92,14 @@
 - 일본 만화 세로쓰기에 특화 훈련된 Vision-Language 모델
 - 신뢰도 < 0.3이면 번역을 건너뛰고 원문 유지 (오역 방지)
 
-### ④ 번역: DeepL API (1순위) / Google Translate (대체)
+### ④ 번역: Hunyuan-MT-7B (로컬 LLM)
 
-**이슈**: 로컬 번역 모델(Helsinki-NLP 등)은 만화 대사체/구어체 번역 품질이 낮고, 대화 문맥을 유지하기 어려움
+**이슈**: 로컬 번역 모델(Helsinki-NLP 등)은 만화 대사체/구어체 번역 품질이 낙어, 대화 문맥을 유지하기 어려움. 외부 API(DeepL/Google)는 키 관리 부담과 운영 비용 발생.
 
-**해결**: DeepL API를 1순위로, Google Translate를 fallback으로 사용.
-- 한 페이지 전체 대사를 **배치 번역** (API 호출 1회로 최적화)
-- 읽기 순서대로 정렬된 대사 목록을 **context**로 함께 전달 → 앞뒤 대화 문맥 유지
-- 지수 백오프 재시도 (최대 3회), 401/403은 즉시 중단
-- 완전 실패 시 원문 반환 (서비스 중단 방지)
+**해결**: WMT25 다국어 번역 경진대회 30/31 언어쌍 1위를 차지한 **tencent/Hunyuan-MT-7B** 로컬 인퍼런스 채택.
+- 외부 API 키 없이 온프레미스 동작
+- `asyncio.to_thread()`로 비동기 실행, GPU fp16 추론
+- 실패 시 원문 그대로 반환 (fallback)
 
 ### ⑤ 텍스트 제거: LaMa (Large Mask Inpainting)
 
@@ -123,14 +122,14 @@
 
 ### 오케스트레이션 최적화: 4+5 병렬 실행
 
-**이슈**: 7단계를 순차 실행하면 번역 API 대기 시간(네트워크 I/O)이 병목
+**이슈**: Stage 4(번역)는 GPU 코어를 오래 점유하고 Stage 5(텍스트 제거)는 개별적으로 실행 가능
 
-**해결**: Stage 4(번역)와 Stage 5(텍스트 제거)는 서로 독립적이므로 `asyncio.gather`로 **동시 실행**.
+**해결**: Stage 4와 Stage 5는 서로 독립적이므로 `asyncio.gather`로 **동시 실행**.
 
 ```
-          ┌── Stage 4: 번역 (네트워크 I/O)
+          ┌── Stage 4: 번역 (Hunyuan-MT-7B, GPU)
 Stage 3 ──┤                               ──→ Stage 6
-          └── Stage 5: 텍스트 제거 (GPU)
+          └── Stage 5: 텍스트 제거 (LaMa, GPU)
 ```
 
 ---
@@ -161,9 +160,10 @@ start.bat          # Windows
 ### 4. 사용
 
 1. 브라우저에서 `http://localhost:20399` 접속
-2. DeepL API 키 설정 (⚙️ 버튼 → 무료 발급 안내 포함)
-3. 만화 이미지 드래그 앤 드롭
-4. 실시간 진행률 확인 → 원본/번역 비교 슬라이더 → 다운로드
+2. 만화 이미지 드래그 앤 드롭
+3. 실시간 진행률 확인 → 원본/번역 비교 슬라이더 → 다운로드
+
+> **주의**: Hunyuan-MT-7B 모델은 첫 요청 시 HuggingFace Hub에서 ~15GB 자동 다운로드됩니다.
 
 ---
 
@@ -176,8 +176,6 @@ start.bat          # Windows
 | POST | `/api/upload/bulk` | 다수 이미지 Bulk 업로드 |
 | GET | `/api/status/{task_id}` | 작업 진행 상태 조회 |
 | GET | `/api/result/{task_id}` | 번역 결과 다운로드 |
-| POST | `/api/settings` | 사용자 API 키 설정 |
-| GET | `/api/settings` | 현재 설정 조회 |
 | GET | `/api/system/gpu` | GPU 환경 정보 |
 | WS | `/ws/progress/{task_id}` | 실시간 진행률 알림 |
 
@@ -193,14 +191,13 @@ server/
 ├── routers/
 │   ├── upload.py        # 업로드 API
 │   ├── result.py        # 결과 다운로드 API
-│   ├── settings.py      # 사용자 설정 API (세션 기반)
 │   └── ws.py            # WebSocket 진행률
 ├── pipeline/
 │   ├── orchestrator.py  # 7단계 파이프라인 오케스트레이션
 │   ├── bubble_detector.py  # ① 말풍선 검출 (YOLOv5s)
 │   ├── preprocessor.py     # ② 크롭 & 업스케일 (Real-ESRGAN)
 │   ├── ocr_engine.py       # ③ OCR (manga-ocr)
-│   ├── translator.py       # ④ 번역 (DeepL/Google)
+│   ├── translator.py       # ④ 번역 (Hunyuan-MT-7B 로컬 LLM)
 │   ├── text_eraser.py      # ⑤ 텍스트 제거 (LaMa)
 │   ├── text_renderer.py    # ⑥ 텍스트 렌더링 (Pillow)
 │   └── compositor.py       # ⑦ 알파 블렌딩 합성
@@ -224,14 +221,13 @@ tests/                   # pytest 테스트 (159+ 케이스)
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `DEEPL_API_KEY` | (없음) | DeepL 번역 API 키 |
-| `GOOGLE_API_KEY` | (없음) | Google 번역 API 키 |
 | `GPU_BACKEND` | `auto` | GPU 백엔드 (auto/cuda/rocm/cpu) |
 | `MAX_UPLOAD_SIZE` | `52428800` | 최대 업로드 크기 (50MB) |
 | `MAX_CONCURRENT_TASKS` | `1` | 동시 파이프라인 수 |
 | `RESULT_TTL_SECONDS` | `3600` | 결과 보존 시간 (1시간) |
 | `SKIP_WARMUP` | `false` | 모델 워밍업 건너뛰기 |
 | `ALLOWED_ORIGINS` | (비어 있음) | CORS 허용 출처 |
+| `USE_MAGI_DETECTOR` | `false` | Magi v2 감지기 활성화 |
 
 ## 라이선스
 

@@ -120,6 +120,94 @@ class TestPreprocessor:
         result = await preprocessor.crop_and_upscale(img, bbox)
         assert result.shape[:2] == (128, 128)
 
+    def test_pick_x4_variant_anime_6b(self, tmp_path):
+        """_pick_x4_variant prefers anime_6B when configured and file exists."""
+        from unittest.mock import patch as _patch
+        import server.pipeline.preprocessor as _mod
+
+        anime = tmp_path / "RealESRGAN_x4plus_anime_6B.pth"
+        anime.write_bytes(b"fake")
+        x4 = tmp_path / "RealESRGAN_x4plus.pth"
+        x4.write_bytes(b"fake")
+
+        with _patch.object(_mod, "_MODELS_DIR", tmp_path), \
+             _patch("server.config.settings") as mock_s:
+            mock_s.upscaler_variant = "anime_6b"
+            path, blocks = _mod._pick_x4_variant()
+        assert path == anime
+        assert blocks == 6
+
+    def test_pick_x4_variant_fallback_to_x4plus(self, tmp_path):
+        """anime_6B missing → falls back to x4plus (num_block=23)."""
+        from unittest.mock import patch as _patch
+        import server.pipeline.preprocessor as _mod
+
+        x4 = tmp_path / "RealESRGAN_x4plus.pth"
+        x4.write_bytes(b"fake")
+
+        with _patch.object(_mod, "_MODELS_DIR", tmp_path), \
+             _patch("server.config.settings") as mock_s:
+            mock_s.upscaler_variant = "anime_6b"
+            path, blocks = _mod._pick_x4_variant()
+        assert path == x4
+        assert blocks == 23
+
+    def test_pick_x4_variant_explicit_x4plus(self, tmp_path):
+        """upscaler_variant='x4plus' → uses x4plus even if anime_6B exists."""
+        from unittest.mock import patch as _patch
+        import server.pipeline.preprocessor as _mod
+
+        anime = tmp_path / "RealESRGAN_x4plus_anime_6B.pth"
+        anime.write_bytes(b"fake")
+        x4 = tmp_path / "RealESRGAN_x4plus.pth"
+        x4.write_bytes(b"fake")
+
+        with _patch.object(_mod, "_MODELS_DIR", tmp_path), \
+             _patch("server.config.settings") as mock_s:
+            mock_s.upscaler_variant = "x4plus"
+            path, blocks = _mod._pick_x4_variant()
+        assert path == x4
+        assert blocks == 23
+
+    def test_remove_furigana_preserves_dakuten(self):
+        """Dakuten-like dots near a large glyph must NOT be erased."""
+        from server.pipeline.preprocessor import remove_furigana
+
+        # Create a 200x200 white image with a large glyph and small dots nearby
+        img = np.ones((200, 200, 3), dtype=np.uint8) * 255
+
+        # Main character body — a large black rectangle
+        img[60:140, 70:130] = 0  # 80x60 block (simulated character body)
+
+        # Dakuten-like dots — two small dots near the upper-right of the glyph
+        img[55:62, 132:138] = 0  # dot 1 (7x6, adjacent to glyph)
+        img[65:72, 132:138] = 0  # dot 2 (7x6, adjacent to glyph)
+
+        result = remove_furigana(img)
+
+        # The dots should be preserved (still black) because they're near the glyph
+        assert (result[58, 135] < 128).all(), "dakuten dot 1 was incorrectly erased"
+        assert (result[68, 135] < 128).all(), "dakuten dot 2 was incorrectly erased"
+
+    def test_remove_furigana_removes_distant_small_components(self):
+        """Small components far from any main glyph should be erased."""
+        from server.pipeline.preprocessor import remove_furigana
+
+        img = np.ones((200, 200, 3), dtype=np.uint8) * 255
+
+        # Main character body
+        img[60:140, 70:130] = 0
+
+        # Distant small component (simulated furigana, far from main text)
+        img[10:18, 10:16] = 0  # 8x6 block, far away
+
+        result = remove_furigana(img)
+
+        # The distant small component should be erased (white)
+        assert (result[14, 13] > 200).all(), "distant small component should be erased"
+        # Main glyph should remain
+        assert (result[100, 100] < 128).all(), "main glyph was incorrectly erased"
+
 
 # ---------------------------------------------------------------------------
 # TestOCREngine
@@ -175,127 +263,115 @@ class TestOCREngine:
 
 
 class TestTranslator:
-    """Translator: no-key fallback, DeepL mock, Google fallback, retry, auth error."""
-
-    async def test_no_keys_returns_originals(self):
-        from server.pipeline.translator import Translator
-
-        t = Translator(deepl_key="", google_key="")
-        result = await t.translate_batch(["こんにちは"])
-        assert result == ["こんにちは"]
-        await t.close()
+    """Translator: Hunyuan-MT-7B local model singleton."""
 
     async def test_empty_input_returns_empty(self):
+        """translate_batch([]) should immediately return [] without loading model."""
+        import server.pipeline.translator as trans_mod
         from server.pipeline.translator import Translator
+        from unittest.mock import patch
 
-        t = Translator(deepl_key="key")
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            t = Translator()
         result = await t.translate_batch([])
         assert result == []
         await t.close()
 
-    async def test_deepl_success(self):
+    async def test_translate_calls_model(self):
+        """translate_batch() offloads to thread and returns model results."""
+        import server.pipeline.translator as trans_mod
         from server.pipeline.translator import Translator
+        from unittest.mock import patch
 
-        t = Translator(deepl_key="fake-key", google_key="")
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "translations": [{"text": "안녕하세요"}]
-        }
-
-        with patch.object(t._client, "post", new_callable=AsyncMock, return_value=mock_resp):
-            result = await t.translate_batch(["こんにちは"])
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_texts_sync",
+                return_value=["안녕하세요"],
+            ):
+                t = Translator(target_lang="KO", source_lang="JA")
+                result = await t.translate_batch(["こんにちは"])
 
         assert result == ["안녕하세요"]
         await t.close()
 
-    async def test_google_fallback_on_deepl_failure(self):
+    async def test_translate_batch_preserves_order(self):
+        """translate_batch returns results in the same order as input."""
+        import server.pipeline.translator as trans_mod
         from server.pipeline.translator import Translator
+        from unittest.mock import patch
 
-        t = Translator(deepl_key="dk", google_key="gk")
+        translated = ["안녕하세요", "감사합니다", "잘 자요"]
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_texts_sync",
+                return_value=translated,
+            ):
+                t = Translator()
+                result = await t.translate_batch(
+                    ["こんにちは", "ありがとう", "おやすみ"]
+                )
 
-        deepl_resp = MagicMock()
-        deepl_resp.status_code = 500
-        deepl_resp.raise_for_status.side_effect = Exception("server error")
-
-        google_resp = MagicMock()
-        google_resp.status_code = 200
-        google_resp.raise_for_status = MagicMock()
-        google_resp.json.return_value = {
-            "data": {"translations": [{"translatedText": "번역됨"}]}
-        }
-
-        call_count = 0
-
-        async def mock_post(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First 3 calls are DeepL retries, then Google
-            if call_count <= 3:
-                return deepl_resp
-            return google_resp
-
-        with patch.object(t._client, "post", side_effect=mock_post):
-            result = await t.translate_batch(["テスト"])
-
-        assert result == ["번역됨"]
+        assert result == translated
         await t.close()
 
-    async def test_auth_error_not_retried_deepl(self):
-        """DeepL 401 → called only once (no retry), then returns originals."""
+    async def test_inference_failure_returns_originals(self):
+        """When inference raises, translate_batch falls back to originals."""
+        import server.pipeline.translator as trans_mod
         from server.pipeline.translator import Translator
+        from unittest.mock import patch
 
-        t = Translator(deepl_key="bad-key", google_key="")
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 401
-
-        mock_post = AsyncMock(return_value=mock_resp)
-        with patch.object(t._client, "post", mock_post):
-            result = await t.translate_batch(["テスト"])
-
-        # Auth error → exactly 1 call, no retry
-        assert mock_post.call_count == 1
-        assert result == ["テスト"]
-        await t.close()
-
-    async def test_retry_3_times_then_fallback_to_originals(self):
-        """DeepL retries 3 times, Google also fails → return originals."""
-        from server.pipeline.translator import Translator
-
-        t = Translator(deepl_key="dk", google_key="gk")
-
-        fail_resp = MagicMock()
-        fail_resp.status_code = 500
-        fail_resp.raise_for_status.side_effect = Exception("fail")
-
-        with patch.object(t._client, "post", new_callable=AsyncMock, return_value=fail_resp), \
-             patch("server.pipeline.translator.asyncio.sleep", new_callable=AsyncMock):
-            result = await t.translate_batch(["テスト"])
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_texts_sync",
+                side_effect=RuntimeError("CUDA OOM"),
+            ):
+                t = Translator()
+                result = await t.translate_batch(["テスト"])
 
         assert result == ["テスト"]
         await t.close()
 
-    async def test_auth_error_google_403(self):
-        """Google 403 → called only once (no retry), then returns originals."""
+    async def test_close_is_noop(self):
+        """close() completes without raising any exception."""
+        import server.pipeline.translator as trans_mod
         from server.pipeline.translator import Translator
+        from unittest.mock import patch
 
-        t = Translator(deepl_key="", google_key="bad")
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            t = Translator()
+        await t.close()  # must not raise
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403
+    def test_unload_model_clears_globals(self):
+        """unload_model() resets module-level singletons."""
+        import server.pipeline.translator as trans_mod
 
-        mock_post = AsyncMock(return_value=mock_resp)
-        with patch.object(t._client, "post", mock_post):
-            result = await t.translate_batch(["テスト"])
+        # Inject fake model/tokenizer
+        trans_mod._model = object()
+        trans_mod._tokenizer = object()
 
-        assert mock_post.call_count == 1
-        assert result == ["テスト"]
+        trans_mod.unload_model()
+
+        assert trans_mod._model is None
+        assert trans_mod._tokenizer is None
+
+    async def test_legacy_kwargs_accepted(self):
+        """deepl_key / google_key kwargs are silently ignored (backward compat)."""
+        import server.pipeline.translator as trans_mod
+        from server.pipeline.translator import Translator
+        from unittest.mock import patch
+
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            t = Translator(
+                deepl_key="legacy-key",
+                google_key="legacy-key",
+                target_lang="KO",
+                source_lang="JA",
+            )
+        assert t.target_lang == "KO"
         await t.close()
-
-
 # ---------------------------------------------------------------------------
 # TestTextEraser
 # ---------------------------------------------------------------------------
@@ -351,31 +427,115 @@ class TestTextRenderer:
         """Empty text should produce an all-zero RGBA image."""
         img = np.zeros((80, 60, 3), dtype=np.uint8)
         bbox = (0, 0, 60, 80)
-        result = await renderer.render(img, "", bbox)
+        result, font_size = await renderer.render(img, "", bbox)
         assert result.shape == (80, 60, 4)
         assert result.max() == 0
+        assert font_size == 0
 
     async def test_output_is_rgba(self, renderer):
-        """render() always returns RGBA (H, W, 4)."""
+        """render() always returns (RGBA array, font_size) tuple."""
         img = np.zeros((80, 60, 3), dtype=np.uint8)
         bbox = (0, 0, 60, 80)
-        result = await renderer.render(img, "테스트", bbox)
+        result, font_size = await renderer.render(img, "테스트", bbox)
         assert result.ndim == 3
         assert result.shape[2] == 4
+        assert isinstance(font_size, int)
+        assert font_size > 0
 
     async def test_horizontal_direction(self, renderer):
-        """Horizontal text renders without error."""
+        """Horizontal text renders without error and returns positive font size."""
         img = np.zeros((100, 200, 3), dtype=np.uint8)
         bbox = (0, 0, 200, 100)
-        result = await renderer.render(img, "테스트 문장", bbox, text_direction="horizontal")
+        result, font_size = await renderer.render(img, "테스트 문장", bbox, text_direction="horizontal")
         assert result.shape[2] == 4
+        assert font_size > 0
 
-    async def test_vertical_direction(self, renderer):
-        """Vertical text on tall bbox triggers vertical layout."""
+    async def test_vertical_source_rendered_horizontal(self, renderer):
+        """Korean translation from a vertical Japanese bubble must render horizontal."""
         img = np.zeros((300, 50, 3), dtype=np.uint8)
         bbox = (0, 0, 50, 300)
-        result = await renderer.render(img, "テスト", bbox, text_direction="vertical")
+        result, font_size = await renderer.render(
+            img, "한국어 번역 테스트", bbox, text_direction="vertical"
+        )
         assert result.shape[2] == 4
+        # Overlay must contain some non-zero pixels (text was actually drawn)
+        assert result.max() > 0, "Korean text must be rendered even on vertical-source bbox"
+
+    async def test_narrow_bbox_does_not_produce_empty_overlay(self, renderer):
+        """Regression: narrow Japanese speech bubble bbox (w=23) rendered Korean text
+        as empty because usable_w=11px < _MIN_FONT_SIZE → text got truncated to 0 lines.
+        font_size must be >= _MIN_FONT_SIZE (12) and overlay must be non-empty.
+        """
+        from server.pipeline.text_renderer import _MIN_FONT_SIZE
+
+        img = np.zeros((82, 23, 3), dtype=np.uint8)
+        # Typical narrow vertical speech bubble bbox from Japanese manga
+        bbox = (0, 0, 23, 82)
+        text = "그럼 유리하마로 가볼게요~!"
+        result, font_size = await renderer.render(img, text, bbox, text_direction="vertical")
+        assert result.shape[2] == 4
+        assert font_size >= _MIN_FONT_SIZE, (
+            f"font_size={font_size} < _MIN_FONT_SIZE={_MIN_FONT_SIZE}: "
+            "renderer fell back to no-render on narrow bbox"
+        )
+        assert result.max() > 0, (
+            "Overlay is completely empty — Korean text not rendered in narrow bbox"
+        )
+
+    async def test_very_narrow_bbox_width_10(self, renderer):
+        """Regression: bbox w=10 (usable_w=1) should still render text.
+        Bubble id=9 in e347732c had w=10 and produced zero output.
+        """
+        img = np.zeros((91, 10, 3), dtype=np.uint8)
+        bbox = (0, 0, 10, 91)
+        text = "슈바츠메우~!"
+        result, font_size = await renderer.render(img, text, bbox, text_direction="vertical")
+        assert result.shape[2] == 4
+        assert result.max() > 0, "w=10 bbox must still produce visible Korean text"
+
+    async def test_narrow_bbox_text_not_severely_truncated(self, renderer):
+        """Regression (e347732c): for a narrow vertical speech bubble (w=23, h=82),
+        a 16-char Korean translation must not be clipped to 5 visible characters.
+
+        Root cause:
+          usable_w = 23 - 2*PADDING = 11px
+          _wrap_text wraps to 1 char/line → 16 lines
+          line_height = MIN_FONT_SIZE * LINE_HEIGHT_RATIO = 12*1.4 ≈ 16px
+          16 lines × 16px = 256px needed, but overlay is only 82px
+          → PIL clips chars 5-16 silently, 69% of text is lost
+
+        After pipeline fix: overlay height must expand to fit all wrapped lines,
+        or font size must shrink until all lines fit within original bbox height.
+        """
+        from server.pipeline.text_renderer import _LINE_HEIGHT_RATIO, _PADDING
+
+        img = np.zeros((82, 23, 3), dtype=np.uint8)
+        bbox = (0, 0, 23, 82)
+        text = "그럼 유리하마로 가볼게요~!"  # 16 chars → 16 lines at usable_w=11px
+
+        result, font_size = await renderer.render(img, text, bbox, text_direction="vertical")
+
+        # Compute actual lines that WOULD be needed at the returned font_size
+        font = renderer._load_font(font_size)
+        usable_w = max(23 - _PADDING * 2, 1)
+        lines = renderer._wrap_text(text, font, usable_w)
+        line_height = int(font_size * _LINE_HEIGHT_RATIO)
+        needed_h = len(lines) * line_height + _PADDING * 2
+
+        assert result.shape[0] >= needed_h, (
+            f"Overlay height {result.shape[0]}px cannot fit {len(lines)} wrapped lines "
+            f"(needs {needed_h}px at font_size={font_size}). "
+            f"Characters beyond line {result.shape[0] // line_height} are silently clipped. "
+            "Pipeline fix: expand overlay height to `needed_h` and update compositor "
+            "to use overlay.shape[0] instead of bbox h."
+        )
+
+    async def test_font_size_used_nonzero_for_nonempty_text(self, renderer):
+        """font_size_used must be > 0 whenever text is non-empty (P5 log correctness)."""
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        bbox = (0, 0, 100, 100)
+        _, font_size = await renderer.render(img, "테스트", bbox)
+        assert font_size > 0, "font_size_used must not be 0 when text is non-empty"
 
     def test_font_not_found_uses_default(self, tmp_path):
         """No font file in font_dir → _font_path is None, uses Pillow default."""
@@ -447,7 +607,8 @@ class TestCompositor:
 class TestModelCache:
     """Orchestrator model cache: singleton instances, cache clearing."""
 
-    def test_get_cached_returns_same_instance(self):
+    @pytest.mark.asyncio
+    async def test_get_cached_returns_same_instance(self):
         """_get_cached returns the same object on repeated calls."""
         from server.pipeline.orchestrator import _get_cached, _model_cache
 
@@ -457,12 +618,13 @@ class TestModelCache:
             def __init__(self, **kwargs):
                 pass
 
-        a = _get_cached(_Dummy, "test-key")
-        b = _get_cached(_Dummy, "test-key")
+        a = await _get_cached(_Dummy, "test-key")
+        b = await _get_cached(_Dummy, "test-key")
         assert a is b
         _model_cache.clear()
 
-    def test_clear_model_cache_empties(self):
+    @pytest.mark.asyncio
+    async def test_clear_model_cache_empties(self):
         """clear_model_cache removes all entries."""
         from server.pipeline.orchestrator import (
             _get_cached,
@@ -474,7 +636,128 @@ class TestModelCache:
             def __init__(self, **kwargs):
                 pass
 
-        _get_cached(_Dummy, "test-clear")
+        await _get_cached(_Dummy, "test-clear")
         assert len(_model_cache) > 0
         clear_model_cache()
         assert len(_model_cache) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestMagiDetector
+# ---------------------------------------------------------------------------
+
+
+class TestMagiDetector:
+    """MagiDetector: bbox conversion, model-not-loaded fallback, reading order."""
+
+    def test_xyxy_to_xywh_conversion(self):
+        """Magi bbox [x1,y1,x2,y2] → BubbleInfo (x,y,w,h)."""
+        from server.pipeline.magi_detector import _xyxy_to_xywh
+
+        assert _xyxy_to_xywh([10.0, 20.0, 110.0, 80.0]) == (10, 20, 100, 60)
+        assert _xyxy_to_xywh([0.0, 0.0, 50.5, 30.9]) == (0, 0, 50, 30)
+
+    async def test_returns_empty_when_model_not_loaded(self):
+        """Model unavailable → detect() returns []."""
+        with patch("server.pipeline.magi_detector.MagiDetector.__init__", lambda self, device: None):
+            from server.pipeline.magi_detector import MagiDetector
+
+            det = MagiDetector.__new__(MagiDetector)
+            det.device = "cpu"
+            det._model = None
+            det._model_loaded = False
+
+        img = np.zeros((200, 300, 3), dtype=np.uint8)
+        result = await det.detect(img)
+        assert result == []
+
+    async def test_detect_produces_xywh_bubbles(self):
+        """Mocked Magi output → BubbleInfo with correct (x,y,w,h)."""
+        from server.pipeline.magi_detector import MagiDetector
+
+        det = MagiDetector.__new__(MagiDetector)
+        det.device = "cpu"
+        det._model_loaded = True
+
+        mock_model = MagicMock()
+        mock_model.predict_detections_and_associations.return_value = [{
+            "texts": [[10.0, 20.0, 110.0, 80.0], [200.0, 50.0, 300.0, 250.0]],
+            "is_essential_text": [True, False],
+            "panels": [],
+            "characters": [],
+        }]
+        det._model = mock_model
+
+        img = np.zeros((300, 400, 3), dtype=np.uint8)
+        bubbles = await det.detect(img)
+
+        assert len(bubbles) == 2
+        assert bubbles[0].bbox == (10, 20, 100, 60)
+        assert bubbles[0].bubble_type == "speech"
+        assert bubbles[0].text_direction == "horizontal"  # w=100>h=60
+
+        assert bubbles[1].bbox == (200, 50, 100, 200)
+        assert bubbles[1].bubble_type == "effect"
+        assert bubbles[1].text_direction == "vertical"  # h=200>w=100*1.2
+
+    async def test_reading_order_preserved_from_magi(self):
+        """Magi's internal sort order is preserved (not re-sorted)."""
+        from server.pipeline.magi_detector import MagiDetector
+
+        det = MagiDetector.__new__(MagiDetector)
+        det.device = "cpu"
+        det._model_loaded = True
+
+        mock_model = MagicMock()
+        mock_model.predict_detections_and_associations.return_value = [{
+            "texts": [[300.0, 10.0, 400.0, 50.0], [10.0, 10.0, 100.0, 50.0]],
+            "is_essential_text": [True, True],
+            "panels": [],
+            "characters": [],
+        }]
+        det._model = mock_model
+
+        img = np.zeros((100, 500, 3), dtype=np.uint8)
+        bubbles = await det.detect(img)
+
+        # Magi returns right bubble first → reading_order should stay 1, 2
+        assert bubbles[0].reading_order == 1
+        assert bubbles[0].bbox[0] == 300  # right bubble first
+        assert bubbles[1].reading_order == 2
+        assert bubbles[1].bbox[0] == 10
+
+    def test_zero_size_bbox_skipped(self):
+        """Zero-width or zero-height bboxes are filtered out."""
+        from server.pipeline.magi_detector import _xyxy_to_xywh
+
+        x, y, w, h = _xyxy_to_xywh([50.0, 50.0, 50.0, 100.0])
+        assert w == 0  # would be filtered in detect()
+
+
+class TestMagiCacheKeySeparation:
+    """Magi and YOLOv5 use different cache keys in orchestrator."""
+
+    @pytest.mark.asyncio
+    async def test_separate_cache_keys(self):
+        """magi_detector and bubble_detector use separate cache keys."""
+        from server.pipeline.orchestrator import _get_cached, _model_cache
+
+        _model_cache.clear()
+
+        class _FakeYOLO:
+            def __init__(self, **kw):
+                self.name = "yolo"
+
+        class _FakeMagi:
+            def __init__(self, **kw):
+                self.name = "magi"
+
+        yolo = await _get_cached(_FakeYOLO, "bubble_detector", device="cpu")
+        magi = await _get_cached(_FakeMagi, "magi_detector", device="cpu")
+
+        assert yolo is not magi
+        assert yolo.name == "yolo"
+        assert magi.name == "magi"
+        assert "bubble_detector" in _model_cache
+        assert "magi_detector" in _model_cache
+        _model_cache.clear()

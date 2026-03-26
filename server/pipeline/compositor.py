@@ -54,8 +54,8 @@ class Compositor:
             src_y0 = max(0, -y)
             dst_x0 = max(0, x)
             dst_y0 = max(0, y)
-            dst_x1 = min(img_w, x + w)
-            dst_y1 = min(img_h, y + h)
+            dst_x1 = min(img_w, x + overlay.shape[1])  # use actual overlay width
+            dst_y1 = min(img_h, y + overlay.shape[0])  # use actual overlay height (may exceed bbox h)
 
             if dst_x1 <= dst_x0 or dst_y1 <= dst_y0:
                 continue

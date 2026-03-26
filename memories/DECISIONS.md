@@ -1,6 +1,6 @@
 # MangaLens — 기술 결정 기록 (DECISIONS.md)
 
-> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-25
+> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-016)
 
 ---
 
@@ -37,15 +37,16 @@
 
 ---
 
-## D-005: API 키 세션 — 서버 메모리 저장 (비영구)
+## D-005: API 키 세션 — 서버 메모리 저장 (비영구) ~~[D-014로 대체됨]~~
 
 - **결정**: API 키를 DB가 아닌 서버 메모리 `session_store` dict에 세션 수명으로 저장
 - **근거**: P7 원칙 "서버가 API 키를 영구 저장하지 않음", 보안상 키를 디스크에 쓰지 않음
 - **식별자**: `session_id` — Cookie 또는 `X-Session-Id` 헤더로 전달
+- **⚠️ 폐기**: D-014 (Hunyuan-MT-7B 로컬 인퍼런스) 채택으로 외부 API 키 불필요. `session_store`, `settings.py` 라우터, 관련 스키마 전면 제거됨
 
 ---
 
-## D-006: HTTP 세션 쿠키 우회 — X-Session-Id 헤더 + localStorage
+## D-006: HTTP 세션 쿠키 우회 — X-Session-Id 헤더 + localStorage ~~[D-014로 대체됨]~~
 
 - **결정**: `secure=True` 쿠키 대신 `localStorage` + `X-Session-Id` 헤더 방식 병행
 - **근거**: HTTP (localhost) 환경에서 `secure=True` 쿠키는 브라우저가 저장하지 않음 → API 키 세션 유실
@@ -53,6 +54,7 @@
   - 서버: `GET/POST /api/settings` 응답 JSON에 `session_id` 포함
   - 클라이언트: `api.js`에서 `localStorage['mangalens_session_id']` 저장/조회, 모든 요청 헤더에 `X-Session-Id` 자동 추가
   - HTTPS 환경에서는 쿠키도 병행 작동 (`secure` 조건부 설정)
+- **⚠️ 폐기**: D-014 채택으로 세션 인프라 전면 제거됨
 
 ---
 
@@ -81,3 +83,81 @@
 - **구현**: `preprocessor.py::remove_furigana()` — 글리프 높이 중앙값의 60% 미만 connected component를 흰색으로 마스킹
 - **보존**: 오쿠리가나(`走る`의 `る`)는 본문과 동일한 크기이므로 영향 없음
 - **위치**: `Preprocessor.crop_and_upscale()` 반환 직전에 적용 (Real-ESRGAN 및 cv2 fallback 양쪽)
+
+---
+
+## D-010: x4 업스케일러 — anime_6B 기본 선택
+
+- **결정**: `RealESRGAN_x4plus_anime_6B.pth` (RRDBNet 6블록, 17MB)를 x4 업스케일러 기본값으로 설정, 기존 `x4plus` (23블록, 64MB)는 fallback으로 유지
+- **근거**: anime_6B는 애니메이션/만화 라인아트+텍스트에 특화 학습되어 OCR 전 업스케일 시 획 선명도가 우수하고, 6블록 경량 구조로 추론 속도 약 2배 빠름. 만화 번역 서비스 특성상 실사 모델보다 적합
+- **설정**: `UPSCALER_VARIANT` 환경변수 (`anime_6b` | `x4plus`), `_pick_x4_variant()` 함수가 모델 경로+블록 수 반환
+- **fallback**: anime_6B 파일 미존재 시 자동으로 x4plus 사용
+
+---
+
+## D-011: Magi v2 통합 — A/B 토글 방식 도입
+
+- **결정**: Magi v2 (`ragavsachdeva/magiv2`)를 기존 YOLOv5 검출기와 A/B 토글 방식으로 통합. 기본값 비활성 (`USE_MAGI_DETECTOR=false`)
+- **근거**: Magi v2는 말풍선·패널·캐릭터 검출 + 화자 연결 + 내장 reading order를 단일 모델로 제공하나, Transformer 기반으로 VRAM ~4GB+ 필요하고 추론이 YOLOv5보다 느림. 점진적 검증을 위해 A/B 토글 방식 채택
+- **구현**:
+  - `server/pipeline/magi_detector.py` 신규 생성 — `MagiDetector` 클래스
+  - bbox 형식 변환 `(x1,y1,x2,y2)` → `(x,y,w,h)` 레이어 (`_xyxy_to_xywh()`)
+  - `is_essential_text` → `speech`/`effect` 매핑
+  - 별도 캐시 키 `"magi_detector"` — YOLOv5 `"bubble_detector"`와 분리
+  - Magi 사용 시 `sort_bubbles_rtl()` 바이패스 (Magi 내장 순서 보존)
+  - VRAM 임계값 검사 (`magi_vram_threshold_mb: 4096`) — 미만 시 로딩 건너뜀
+- **의존성**: `accelerate>=1.0`, `transformers>=5.0` (기존 manga-ocr 의존성)
+
+---
+
+## D-012: 후리가나 제거 — 탁점/반탁점 보호 로직 추가
+
+- **결정**: `remove_furigana()` 에서 작은 connected component가 큰 글리프 bbox에 근접하면 삭제하지 않음 (탁점/반탁점 보존)
+- **근거**: 탁점(゛)과 반탁점(゜)은 이진화 후 문자 본체와 별도 connected component로 분리되나, 문자 본체 바로 옆에 위치. 탁점 없이 OCR할 경우 `が→か`, `ぱ→は` 등 의미가 완전히 달라져 번역 품질 심각하게 저하
+- **구현**: 작은 컴포넌트 bbox와 모든 큰 글리프 bbox 간 근접도 검사 — padding = `max(median_h * 0.15, 3px)`. 근접하면 보존, 멀면 후리가나로 제거
+- **관련 결정**: D-009 (후리가나 제거 최초 구현) 보완
+
+---
+
+---
+
+## D-014: 번역 엔진 — Hunyuan-MT-7B 로컬 인퍼런스 (DeepL/Google 대체)
+
+- **결정**: DeepL API(기본) + Google Translate(fallback) 외부 API 방식을 `tencent/Hunyuan-MT-7B` 로컬 모델 인퍼런스로 완전 대체
+- **근거**: WMT25 경진대회 30/31 언어쌍 1위, JA→KO 지원, 외부 API 키 종속성 제거, 인터넷 없는 환경에서도 번역 가능
+- **모델**: `tencent/Hunyuan-MT-7B` (CausalLM, 7B 파라미터, fp16 ~14GB VRAM)
+- **추론**: 싱글턴 패턴 + `threading.Lock` 이중 확인, `asyncio.to_thread()`로 비동기 처리
+- **프롬프트**: `"Translate the following segment into Korean, without additional explanation.\n{text}"`
+- **fallback**: 추론 실패 시 원문 그대로 반환 (번역 건너뜀)
+- **제거된 코드**: `session_store`, `POST/GET /api/settings`, `UserSettings` 스키마, `deepl_api_key`/`google_api_key` 설정 필드, `X-DeepL-Key`/`X-Google-Key`/`X-Session-Id` CORS 헤더
+- **D-005, D-006 폐기**: 외부 API 키 관리 인프라 전면 제거
+
+---
+
+## D-013: 출력 디렉토리 네이밍 — 날짜+시간 형식
+
+- **결정**: `task_id`를 `uuid.uuid4().hex` 대신 `YYYYMMDD_HHMMSS_fff_xxxxxx` 형식으로 생성
+- **근거**: UUID hex(예: `30927c97f0a3...`)는 사람이 식별 불가. 날짜+시간+밀리초 형식으로 변경하면 출력물 정렬과 시간 확인이 용이
+- **충돌 방지**: 6자리 UUID 접미사(`_xxxxxx`) 추가로 동시 업로드 시에도 고유성 보장
+- **예시**: `20260326_112302_385_176b5e`
+
+---
+
+## D-015: 모델 캐시 동시성 — asyncio.Lock 이중 확인 잠금
+
+- **결정**: `_get_cached()` → `async def` 전환 + 모듈 레벨 `_model_cache_lock: asyncio.Lock` 이중 확인 잠금 (DCL)
+- **근거**: 동시 요청 시 캐시 miss가 여러 코루틴에서 동시 감지되어 동일 모델이 2번 이상 로딩될 수 있음 → VRAM 이중 점유 또는 OOM. asyncio는 단일 스레드이므로 `async with lock` 만으로 충분
+- **패턴**: fast path(잠금 없는 조회) → slow path(잠금 + 재확인 → 생성)
+- **영향**: `_get_cached` 호출 6개소 모두 `await` 추가, 관련 테스트 3개 `@pytest.mark.asyncio` + `async def` 전환
+
+---
+
+## D-016: WebSocket 업데이트 — 폴링 → 이벤트 기반 pub/sub
+
+- **결정**: `ws.py` 1초 폴링 `asyncio.sleep(1)` → `state.py` pub/sub Queue + `asyncio.wait_for(q.get(), timeout=5.0)` heartbeat
+- **근거**: 1초 폴링은 연결 수 × 초당 1회 상태 조회로 확장성 한계. 이벤트 기반 전환 시 상태 변경이 있을 때만 전송 → CPU/메모리 절약, 응답 지연 ~0으로 감소
+- **구현**:
+  - `state.py`: `_task_watchers: dict[str, list[asyncio.Queue[bool]]]` + `subscribe/unsubscribe/notify_task_changed`
+  - `ws.py`: `subscribe()` 호출 후 `asyncio.wait_for(q.get(), 5.0)` — 5초 timeout 시 heartbeat 전송
+  - `upload.py`: 처리 시작, 이미지 완료, 최종 상태 3개소에서 `notify_task_changed()` 호출
+- **안전성**: `finally` 블록에서 `unsubscribe()` 보장으로 연결 종료 시 Queue 누수 없음

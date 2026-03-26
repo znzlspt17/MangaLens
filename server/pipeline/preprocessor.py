@@ -14,11 +14,18 @@ logger = logging.getLogger(__name__)
 def remove_furigana(image: np.ndarray) -> np.ndarray:
     """Remove furigana (ruby text) from a bubble crop image before OCR.
 
-    Furigana characters are visually small — typically less than 60% of the
+    Furigana characters are visually small — typically less than 40% of the
     median glyph height in the same region.  By filtering connected components
     below that threshold we mask them out with the background colour (white)
     without touching okurigana or regular hiragana words, which share the same
     character size as kanji.
+
+    **Dakuten / handakuten protection**: Small dot-like marks (゛ ゜) that are
+    part of a character (e.g. が, ぱ) appear as tiny separate connected
+    components after binarisation.  To avoid deleting them we check whether a
+    small component's bounding box overlaps or nearly touches any main-glyph
+    bounding box.  If it does, the component is likely a diacritical mark and
+    is preserved.
 
     Args:
         image: BGR crop of a single bubble (already upscaled).
@@ -34,20 +41,62 @@ def remove_furigana(image: np.ndarray) -> np.ndarray:
     if n_labels <= 1:
         return image  # no components found
 
-    # Exclude background (label 0); collect heights of all glyphs
+    # Exclude background (label 0); collect heights/areas of all glyphs
     heights = stats[1:, cv2.CC_STAT_HEIGHT]
+    areas = stats[1:, cv2.CC_STAT_AREA]
     if len(heights) == 0:
         return image
 
     median_h = float(np.median(heights))
-    threshold_h = median_h * 0.6  # glyphs smaller than this are furigana candidates
+    median_area = float(np.median(areas))
+    threshold_h = median_h * 0.4
+    threshold_area = median_area * 0.25
+
+    # --- Build list of main-glyph bounding boxes (non-small components) ---
+    large_rects: list[tuple[int, int, int, int]] = []  # (x1, y1, x2, y2)
+    for i in range(1, n_labels):
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+        a = stats[i, cv2.CC_STAT_AREA]
+        if not (h < threshold_h and a < threshold_area):
+            lx = int(stats[i, cv2.CC_STAT_LEFT])
+            ly = int(stats[i, cv2.CC_STAT_TOP])
+            lw = int(stats[i, cv2.CC_STAT_WIDTH])
+            lh = int(stats[i, cv2.CC_STAT_HEIGHT])
+            large_rects.append((lx, ly, lx + lw, ly + lh))
+
+    # Proximity padding — dakuten marks sit within a few pixels of the
+    # parent character body.  15 % of the median glyph height (min 3 px)
+    # is enough to catch them without reaching into a furigana sub-column.
+    pad = max(median_h * 0.15, 3.0)
 
     result = image.copy()
     for label_idx in range(1, n_labels):
-        if stats[label_idx, cv2.CC_STAT_HEIGHT] < threshold_h:
-            # Paint furigana region white (background)
-            component_mask = labels == label_idx
-            result[component_mask] = (255, 255, 255)
+        h = stats[label_idx, cv2.CC_STAT_HEIGHT]
+        a = stats[label_idx, cv2.CC_STAT_AREA]
+        # Both height AND area must be small to be considered furigana
+        if not (h < threshold_h and a < threshold_area):
+            continue
+
+        # Bounding box of this small component
+        sx1 = int(stats[label_idx, cv2.CC_STAT_LEFT])
+        sy1 = int(stats[label_idx, cv2.CC_STAT_TOP])
+        sx2 = sx1 + int(stats[label_idx, cv2.CC_STAT_WIDTH])
+        sy2 = sy1 + int(h)
+
+        # If this small component overlaps (with padding) any main glyph,
+        # it is likely a dakuten/handakuten mark — preserve it.
+        near_large = False
+        for (lx1, ly1, lx2, ly2) in large_rects:
+            if (sx1 - pad < lx2 and sx2 + pad > lx1 and
+                    sy1 - pad < ly2 and sy2 + pad > ly1):
+                near_large = True
+                break
+
+        if near_large:
+            continue
+
+        component_mask = labels == label_idx
+        result[component_mask] = (255, 255, 255)
 
     return result
 
@@ -86,6 +135,29 @@ _patch_basicsr()
 _MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
 
 
+def _pick_x4_variant() -> tuple[Path, int]:
+    """Return (weight_path, num_block) for the configured x4 upscaler.
+
+    Prefers anime_6B (lighter, manga-optimised); falls back to x4plus.
+    """
+    from server.config import settings
+
+    anime_path = _MODELS_DIR / "RealESRGAN_x4plus_anime_6B.pth"
+    x4plus_path = _MODELS_DIR / "RealESRGAN_x4plus.pth"
+
+    if settings.upscaler_variant == "anime_6b" and anime_path.exists():
+        return anime_path, 6
+    if x4plus_path.exists():
+        if settings.upscaler_variant == "anime_6b":
+            logger.warning(
+                "anime_6B weights not found; falling back to x4plus"
+            )
+        return x4plus_path, 23
+    if anime_path.exists():
+        return anime_path, 6
+    return x4plus_path, 23  # will trigger "not found" later
+
+
 class Preprocessor:
     """Crop bubble regions and upscale them for better OCR accuracy.
 
@@ -100,7 +172,7 @@ class Preprocessor:
         self._upsampler_x4 = None
 
         x2_path = _MODELS_DIR / "RealESRGAN_x2plus.pth"
-        x4_path = _MODELS_DIR / "RealESRGAN_x4plus.pth"
+        x4_path, x4_num_block = _pick_x4_variant()
 
         if not x2_path.exists() or not x4_path.exists():
             logger.warning(
@@ -126,7 +198,7 @@ class Preprocessor:
 
             net_x4 = RRDBNet(
                 num_in_ch=3, num_out_ch=3, num_feat=64,
-                num_block=23, num_grow_ch=32, scale=4,
+                num_block=x4_num_block, num_grow_ch=32, scale=4,
             )
             self._upsampler_x4 = RealESRGANer(
                 scale=4, model_path=str(x4_path), model=net_x4,
@@ -134,7 +206,10 @@ class Preprocessor:
             )
 
             self._model_loaded = True
-            logger.info("Real-ESRGAN models loaded (device=%s)", device)
+            logger.info(
+                "Real-ESRGAN models loaded (x4=%s, blocks=%d, device=%s)",
+                x4_path.name, x4_num_block, device,
+            )
         except Exception:
             logger.warning(
                 "Failed to initialise Real-ESRGAN. "

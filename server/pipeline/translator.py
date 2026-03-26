@@ -1,33 +1,162 @@
-"""Translation — DeepL (primary) / Google Translate (fallback)."""
+"""Translation — Hunyuan-MT-7B local model (JA→KO).
+
+Model : tencent/Hunyuan-MT-7B  (CausalLM, ~7 B parameters)
+Prompt: "Translate the following segment into Korean, without additional
+         explanation.\n<source_text>"   (per model card)
+
+The model is loaded **once** at module level behind a threading.Lock and
+reused across every request.  asyncio.to_thread() offloads the blocking
+inference so the ASGI event loop is never stalled.
+
+Public interface (Translator class, translate_batch, close) is identical
+to the previous API-based implementation so the orchestrator needs only
+one-line changes.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-
-import httpx
+import threading
 
 logger = logging.getLogger(__name__)
 
-# Sentinel for auth errors that should NOT be retried.
-_NON_RETRYABLE_STATUS = frozenset({401, 403})
+_HUNYUAN_MODEL_ID = "tencent/Hunyuan-MT-7B"
+_MAX_NEW_TOKENS = 256
+# Per model card — do NOT alter without re-validating translation quality.
+_PROMPT_TEMPLATE = (
+    "Translate the following segment into Korean, "
+    "without additional explanation.\n{text}"
+)
 
-_DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
-_DEEPL_PRO_URL = "https://api.deepl.com/v2/translate"
-_GOOGLE_URL = "https://translation.googleapis.com/language/translate/v2"
+# ---------------------------------------------------------------------------
+# Module-level singleton  (thread-safe, double-checked locking)
+# ---------------------------------------------------------------------------
+_model = None
+_tokenizer = None
+_model_device: str = "cpu"
+_init_lock = threading.Lock()
 
 
-class TranslationAuthError(Exception):
-    """Raised on 401/403 — do not retry."""
+def _ensure_model_loaded(device: str = "cpu") -> None:
+    """Load Hunyuan-MT-7B exactly once; subsequent calls are no-ops."""
+    global _model, _tokenizer, _model_device
 
+    if _model is not None:
+        return
+
+    with _init_lock:
+        if _model is not None:  # second check inside the lock
+            return
+
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            import torch
+        except ImportError as exc:
+            raise RuntimeError(
+                "transformers is required for local translation. "
+                "Run: uv add transformers"
+            ) from exc
+
+        logger.info("Loading %s on device=%s ...", _HUNYUAN_MODEL_ID, device)
+
+        _tokenizer = AutoTokenizer.from_pretrained(
+            _HUNYUAN_MODEL_ID,
+            trust_remote_code=True,
+        )
+
+        # fp16 on GPU, fp32 on CPU (fp16 unsupported on most CPU builds).
+        torch_dtype = torch.float16 if device != "cpu" else torch.float32
+
+        _model = AutoModelForCausalLM.from_pretrained(
+            _HUNYUAN_MODEL_ID,
+            torch_dtype=torch_dtype,
+            device_map=device,          # "auto" also works when accelerate is installed
+            trust_remote_code=True,
+        )
+        _model.eval()
+        _model_device = device
+        logger.info("Hunyuan-MT-7B ready on %s", device)
+
+
+def unload_model() -> None:
+    """Release the model from memory (useful for testing / graceful shutdown)."""
+    global _model, _tokenizer
+    with _init_lock:
+        _model = None
+        _tokenizer = None
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    logger.info("Hunyuan-MT-7B unloaded")
+
+
+# ---------------------------------------------------------------------------
+# Synchronous inference (runs inside asyncio.to_thread)
+# ---------------------------------------------------------------------------
+
+def _translate_texts_sync(texts: list[str]) -> list[str]:
+    """Translate *texts* one-by-one using the loaded model.
+
+    This function is synchronous and CPU/GPU-bound.  It must be called
+    via ``asyncio.to_thread()`` to avoid blocking the event loop.
+    """
+    import torch
+
+    results: list[str] = []
+    for text in texts:
+        prompt = _PROMPT_TEMPLATE.format(text=text)
+        inputs = _tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024,
+        )
+        inputs = {k: v.to(_model_device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            output_ids = _model.generate(
+                **inputs,
+                max_new_tokens=_MAX_NEW_TOKENS,
+                do_sample=False,
+                eos_token_id=_tokenizer.eos_token_id,
+                pad_token_id=(
+                    _tokenizer.pad_token_id
+                    if _tokenizer.pad_token_id is not None
+                    else _tokenizer.eos_token_id
+                ),
+            )
+
+        # Slice off the prompt tokens — decode only newly generated tokens.
+        input_len = inputs["input_ids"].shape[1]
+        generated_ids = output_ids[0][input_len:]
+        decoded = _tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        results.append(decoded)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Public Translator class
+# ---------------------------------------------------------------------------
 
 class Translator:
-    """Batch translator with DeepL-first, Google-fallback strategy.
+    """Local Hunyuan-MT-7B translator (JA->KO).
 
-    Features:
-    - Batch translation to minimise API calls.
-    - Context-aware: surrounding bubble texts passed as context.
-    - Automatic retry with exponential backoff (max 3 attempts).
+    The public interface is intentionally identical to the previous
+    API-based Translator so the orchestrator can adopt it with minimal
+    changes.
+
+    Args:
+        deepl_key:  Unused -- kept for API compatibility with orchestrator.
+        google_key: Unused -- kept for API compatibility with orchestrator.
+        target_lang: Target language code (default: "KO").
+        source_lang: Source language code (default: "JA").
+        device:     Torch device string passed by the orchestrator after
+                    GPU detection (e.g. "cpu", "cuda", "cuda:0").
     """
 
     def __init__(
@@ -36,157 +165,56 @@ class Translator:
         google_key: str = "",
         target_lang: str = "KO",
         source_lang: str = "JA",
+        device: str = "cpu",
     ) -> None:
-        self.deepl_key = deepl_key
-        self.google_key = google_key
         self.target_lang = target_lang
         self.source_lang = source_lang
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        self._device = device
+        # Trigger model load -- no-op on subsequent Translator instantiations.
+        _ensure_model_loaded(device)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def translate_batch(
         self,
         texts: list[str],
         context: list[str] | None = None,
     ) -> list[str]:
-        """Translate a batch of texts, preserving dialogue context.
+        """Translate a batch of texts using Hunyuan-MT-7B.
 
-        Tries DeepL first; falls back to Google Translate when DeepL is
-        unavailable or errors out.  Retries up to 3 times per engine
-        with exponential backoff.
+        Inference runs in a thread pool via asyncio.to_thread() so the
+        ASGI event loop remains unblocked.
 
         Args:
-            texts: List of source-language strings to translate.
-            context: Optional surrounding texts for contextual translation.
+            texts:   Source-language strings to translate.
+            context: Reserved for future context-aware prompting; currently
+                     not incorporated into the LLM prompt.
 
         Returns:
-            List of translated strings in the same order as ``texts``.
+            Translated strings in the same order as texts.
         """
         if not texts:
             return []
 
-        # --- Try DeepL ---
-        if self.deepl_key:
-            try:
-                return await self._translate_with_retry("deepl", texts, context)
-            except Exception:
-                logger.warning("DeepL translation failed, trying Google fallback")
-
-        # --- Try Google ---
-        if self.google_key:
-            try:
-                return await self._translate_with_retry("google", texts, context)
-            except Exception:
-                logger.warning("Google translation also failed, returning originals")
-
-        # Both unavailable / failed → return originals
-        if not self.deepl_key and not self.google_key:
-            logger.warning("No translation API keys configured, returning originals")
-        return list(texts)
-
-    async def _translate_with_retry(
-        self,
-        engine: str,
-        texts: list[str],
-        context: list[str] | None,
-        max_retries: int = 3,
-    ) -> list[str]:
-        """Call a translation engine with exponential-backoff retry.
-
-        Args:
-            engine: ``"deepl"`` or ``"google"``.
-            texts: Texts to translate.
-            context: Optional context.
-            max_retries: Maximum retry attempts.
-
-        Returns:
-            Translated texts.
-
-        Raises:
-            Exception: If all retries are exhausted.
-        """
-        for attempt in range(max_retries):
-            try:
-                if engine == "deepl":
-                    return await self._call_deepl(texts, context)
-                else:
-                    return await self._call_google(texts, context)
-            except TranslationAuthError:
-                # 401/403 — no point retrying
-                raise
-            except Exception:
-                if attempt == max_retries - 1:
-                    raise
-                wait = 2 ** attempt
-                logger.warning(
-                    "Translation attempt %d/%d failed (%s), retrying in %ds",
-                    attempt + 1,
-                    max_retries,
-                    engine,
-                    wait,
-                )
-                await asyncio.sleep(wait)
-        # Unreachable but keeps type-checkers happy
-        raise RuntimeError("Retry loop exited unexpectedly")
-
-    async def _call_deepl(
-        self,
-        texts: list[str],
-        context: list[str] | None,
-    ) -> list[str]:
-        """Call DeepL API v2."""
-        url = (
-            _DEEPL_FREE_URL
-            if self.deepl_key.endswith(":fx")
-            else _DEEPL_PRO_URL
-        )
-        headers = {"Authorization": f"DeepL-Auth-Key {self.deepl_key}"}
-        body: dict = {
-            "text": texts,
-            "source_lang": self.source_lang,
-            "target_lang": self.target_lang,
-        }
         if context:
-            body["context"] = "\n".join(context)
-
-        resp = await self._client.post(url, json=body, headers=headers)
-
-        if resp.status_code in _NON_RETRYABLE_STATUS:
-            raise TranslationAuthError(
-                f"DeepL auth error: {resp.status_code}"
+            logger.debug(
+                "translate_batch: context arg received (%d items) -- "
+                "not yet incorporated into LLM prompt",
+                len(context),
             )
-        resp.raise_for_status()
 
-        data = resp.json()
-        return [t["text"] for t in data["translations"]]
+        try:
+            results = await asyncio.to_thread(_translate_texts_sync, texts)
+        except Exception:
+            logger.exception("Hunyuan-MT-7B inference failed; returning originals")
+            return list(texts)
 
-    async def _call_google(
-        self,
-        texts: list[str],
-        context: list[str] | None,
-    ) -> list[str]:
-        """Call Google Cloud Translation API v2."""
-        params = {"key": self.google_key}
-        body = {
-            "q": texts,
-            "source": self.source_lang.lower(),
-            "target": self.target_lang.lower(),
-            "format": "text",
-        }
-
-        resp = await self._client.post(_GOOGLE_URL, params=params, json=body)
-
-        if resp.status_code in _NON_RETRYABLE_STATUS:
-            raise TranslationAuthError(
-                f"Google auth error: {resp.status_code}"
-            )
-        resp.raise_for_status()
-
-        data = resp.json()
-        return [
-            t["translatedText"]
-            for t in data["data"]["translations"]
-        ]
+        return results
 
     async def close(self) -> None:
-        """Shut down the underlying HTTP client."""
-        await self._client.aclose()
+        """No-op: the model remains in memory for reuse across requests.
+
+        Call unload_model() at shutdown if explicit memory release is needed.
+        """

@@ -21,6 +21,11 @@ _STROKE_WIDTH = 2
 _LINE_HEIGHT_RATIO = 1.4
 _FONT_WEIGHT = 700  # Bold weight for variable fonts
 
+# P2: Module-level font object cache keyed by (font_path, size).
+# _find_best_font_size() calls _load_font() O(log N) times during binary
+# search; caching avoids re-reading the font file on every iteration.
+_font_cache: dict[tuple[str | None, int], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+
 
 class TextRenderer:
     """Render translated text onto bubble images using Pillow.
@@ -72,13 +77,18 @@ class TextRenderer:
             )
 
     def _load_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-        """Load font at the given size with bold weight."""
+        """Load font at the given size with bold weight (cached)."""
+        cache_key = (self._font_path, size)
+        if cache_key in _font_cache:
+            return _font_cache[cache_key]
         if self._font_path:
             font = ImageFont.truetype(self._font_path, size)
             if self._is_variable_font:
                 font.set_variation_by_axes([_FONT_WEIGHT])
-            return font
-        return ImageFont.load_default(size=size)
+        else:
+            font = ImageFont.load_default(size=size)
+        _font_cache[cache_key] = font
+        return font
 
     async def render(
         self,
@@ -106,25 +116,34 @@ class TextRenderer:
         usable_w = max(bw - _PADDING * 2, 1)
         usable_h = max(bh - _PADDING * 2, 1)
 
-        # Decide layout: if bubble is tall and direction is vertical, use vertical layout
-        use_vertical = (
-            text_direction == "vertical" and bh > bw * 1.5
-        )
+        # Korean (and most translated target languages) use horizontal writing only.
+        # Vertical layout is only appropriate for the source Japanese — never for
+        # the rendered translation.
+        use_vertical = False
 
         font_size = self._find_best_font_size(text, usable_w, usable_h, use_vertical)
         # Apply a scale-down factor so text doesn't fill bbox edge-to-edge
         font_size = max(int(font_size * 0.85), _MIN_FONT_SIZE)
         font = self._load_font(font_size)
 
-        # Create RGBA overlay at bbox size
-        overlay = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        # Pre-compute lines to know actual height needed (prevents silent clipping)
+        lines = self._wrap_text(text, font, usable_w) if not use_vertical else None
+        line_height = int(font_size * _LINE_HEIGHT_RATIO)
+
+        if not use_vertical and lines is not None:
+            needed_h = len(lines) * line_height + _PADDING * 2
+            actual_bh = max(bh, needed_h)
+        else:
+            actual_bh = bh
+
+        # Create RGBA overlay — may be taller than bbox to prevent text clipping
+        overlay = Image.new("RGBA", (bw, actual_bh), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         if use_vertical:
-            self._draw_vertical(draw, font, text, usable_w, usable_h, font_size)
+            self._draw_vertical(draw, font, text, usable_w, actual_bh - _PADDING * 2, font_size)
         else:
-            lines = self._wrap_text(text, font, usable_w)
-            self._draw_horizontal(draw, font, lines, usable_w, usable_h, font_size)
+            self._draw_horizontal(draw, font, lines, usable_w, actual_bh - _PADDING * 2, font_size)
 
         return np.array(overlay, dtype=np.uint8), font_size
 

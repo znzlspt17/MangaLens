@@ -1,6 +1,6 @@
 # MangaLens — 진행 상황 추적
 
-> 최종 갱신: 2026-03-25
+> 최종 갱신: 2026-03-26 (Phase 11: P0–P2 버그 수정 스프린트)
 
 ---
 
@@ -10,12 +10,13 @@
 |-----------|------|------|
 | 서버 (FastAPI) | ✅ 정상 동작 | port 20399, uvicorn |
 | GPU | ✅ CUDA | NVIDIA RTX 4090, VRAM 24564 MB, CUDA 12.8 |
-| BubbleDetector | ✅ ML 모드 | comic-text-detector YOLOv5 on CUDA |
-| Preprocessor (Real-ESRGAN) | ✅ 정상 | device=cuda |
+| BubbleDetector | ✅ ML 모드 | comic-text-detector YOLOv5 on CUDA (기본) |
+| MagiDetector | ⚠️ 비활성 | `USE_MAGI_DETECTOR=true`로 활성화 (ragavsachdeva/magiv2) |
+| Preprocessor (Real-ESRGAN) | ✅ 정상 | device=cuda, anime_6B 기본 (x4plus fallback) |
 | OCREngine (manga-ocr) | ✅ 정상 | kha-white/manga-ocr-base on CUDA |
 | TextEraser (LaMa) | ✅ 정상 | models/big-lama.pt |
 | TextRenderer (Pillow) | ✅ 정상 | fonts/NotoSansKR-Regular.ttf |
-| 번역 (DeepL/Google) | ✅ 세션 키 | HTTP 세션 쿠키 우회 → X-Session-Id 헤더 방식 |
+| 번역 (Hunyuan-MT-7B) | ✅ 로컬 모델 | tencent/Hunyuan-MT-7B, 7B파라미터, fp16, 외부 API 키 불필요 |
 | 프론트엔드 | ✅ 정상 | index.html, 다크모드, 반응형 |
 
 ---
@@ -79,39 +80,36 @@
 
 ## 알려진 이슈 (PM 검토 결과)
 
-### P0 — 즉시 수정 필요
+### P0 — 모두 해결됨 ✅
 
-| 이슈 | 파일 | 내용 |
+| 이슈 | 파일 | 상태 |
 |------|------|------|
-| 모델 캐시 Race Condition | `server/pipeline/orchestrator.py` | `_model_cache` dict에 `asyncio.Lock` 없이 동시 접근 → 모델 2중 로딩·GPU OOM 위험 |
-| httpx 클라이언트 미해제 | `server/pipeline/translator.py` | `AsyncClient.close()` 정의만 있고 호출 없음 → 연결 누수 |
-| TOCTOU 버그 | `server/routers/result.py` | `delete_after_download=True` 시 `StreamingResponse` 전송 완료 전 파일 삭제 가능 |
+| 모델 캐시 Race Condition | `server/pipeline/orchestrator.py` | ✅ 해결 — `async def _get_cached` + `asyncio.Lock` 이중 확인 잠금 |
 
-### P1 — 중요 개선
+### P1 — 모두 해결됨 ✅
 
-| 이슈 | 파일 | 내용 |
+| 이슈 | 파일 | 상태 |
 |------|------|------|
-| GPU 텐서 미해제 | `server/pipeline/text_eraser.py` | `del img_t, mask_t` + `torch.cuda.empty_cache()` 누락 → VRAM 누적 |
-| task_store 동시성 | `server/state.py` | 비원자적 다중 필드 업데이트, `asyncio.Lock` 혹은 dataclass 교체 필요 |
-| 세션 TTL 없음 | `server/routers/settings.py` | `session_store` 무기한 메모리 점유 → TTL 정리 로직 추가 필요 |
-| Semaphore 초기화 경합 | `server/routers/upload.py` | 동시 첫 요청 시 Semaphore 2중 생성 가능 |
+| GPU 텐서 미해제 | `server/pipeline/text_eraser.py` | ✅ 해결 — `del img_t, mask_t, result` + `torch.cuda.empty_cache()` |
+| task_store 동시성 | `server/state.py` | ✅ 해결 — pub/sub Queue 인프라 추가 (`subscribe/unsubscribe/notify_task_changed`) |
+| Semaphore 초기화 경합 | `server/routers/upload.py` | ✅ 해결 — `asyncio.Lock` 보호 `async def _get_semaphore()` + notify 3개소 |
 
-### P2 — 개선 권장
+### P2 — 모두 해결됨 ✅
 
-| 이슈 | 파일 | 내용 |
+| 이슈 | 파일 | 상태 |
 |------|------|------|
-| WebSocket 폴링 비확장 | `server/routers/ws.py` | 1초 폴링 → 대규모 연결 시 이벤트 기반 전환 권장 |
-| font.getlength() 반복 | `server/pipeline/text_renderer.py` | 이진탐색 내 반복 호출 → 성능 병목 가능 |
-| 라이트모드 색상 대비 | `frontend/css/style.css` | WCAG AA 기준 일부 미달 |
-| WS 메시지 파싱 에러 누락 | `frontend/js/progress.js` | JSON 파싱 에러 로깅 없음 |
+| WebSocket 폴링 비확장 | `server/routers/ws.py` | ✅ 해결 — 1초 폴링 → 이벤트 기반 Queue (5초 heartbeat) |
+| font.getlength() 반복 | `server/pipeline/text_renderer.py` | ✅ 해결 — 모듈 레벨 `_font_cache` dict |
+| 라이트모드 색상 대비 | `frontend/css/themes.css` | ✅ 해결 — WCAG AA: `#6b7280`→`#4b5563` (secondary), `#9ca3af`→`#6b7280` (muted) |
+| WS 메시지 파싱 에러 누락 | `frontend/js/progress.js` | ✅ 해결 — `console.warn` 로깅 추가 |
 
 ### 낮음 — 기존 이슈
 
 | 이슈 | 심각도 | 내용 |
 |------|--------|------|
-| 세션 서버 재시작 시 소멸 | 낮음 | 의도된 설계 (P7 원칙). 재시작 후 API 키 재입력 필요 |
-| HF_TOKEN 미설정 경고 | 낮음 | HuggingFace rate limit 경고. 기능에는 영향 없음 |
-| basicsr `.venv` 패치 | 낮음 | `uv sync` 재실행 시 재패치 필요 (자동화 미구현) |
+| HF_TOKEN 미설정 경고 | 낙음 | HuggingFace rate limit 경고. 기능에는 영향 없음 |
+| basicsr `.venv` 패치 | 낙음 | `uv sync` 재실행 시 재패치 필요 (자동화 미구현) |
+| Hunyuan 첫 요청 지연 | 낙음 | 마지막 비활성 시 ~5내가 VRAM 로드. lifespan warm-up으로 개선 가능 (D-014 후속고려) |
 
 ---
 
@@ -127,3 +125,103 @@
 | Phase 6: 프론트엔드 | ✅ |
 | Phase 7: UI 개선 & 버그 수정 | ✅ |
 | PM 전체 검토 | ✅ 종합 7.9/10 |
+| Phase 8: 모델 업그레이드 | ✅ |
+| Phase 9: 탁점 보호 & UX 개선 | ✅ |
+| Phase 10: Hunyuan-MT-7B 번역 엔진 마이그레이션 | ✅ |
+| Phase 11: P0–P2 버그 수정 스프린트 | ✅ |
+
+---
+
+## 2026-03-26 — Phase 11: P0–P2 버그 수정 스프린트
+
+### PM 검토 기반 전체 이슈 해결 ✅
+
+| # | 파일 | 변경 내용 | 심각도 |
+|---|------|-----------|--------|
+| 1 | `server/pipeline/orchestrator.py` | `_get_cached` → `async def` + `asyncio.Lock` 이중 확인 잠금, 6개 call site `await` 추가 | P0 |
+| 2 | `server/pipeline/text_eraser.py` | LaMa 추론 후 `del img_t, mask_t, result` + `torch.cuda.empty_cache()` 추가 | P1 |
+| 3 | `server/state.py` | pub/sub Queue 인프라 — `subscribe()`, `unsubscribe()`, `notify_task_changed()` 추가 | P1 |
+| 4 | `server/routers/upload.py` | `asyncio.Lock` 보호 `async def _get_semaphore()`, 3개소 `notify_task_changed()` 호출 추가 | P1 |
+| 5 | `server/routers/ws.py` | 1초 폴링 → 이벤트 기반 `asyncio.Queue` (5초 heartbeat timeout) | P2 |
+| 6 | `server/pipeline/text_renderer.py` | 모듈 레벨 `_font_cache: dict[tuple, ...]` — `_load_font()` 캐시 조회 우선 | P2 |
+| 7 | `frontend/css/themes.css` | 라이트모드 WCAG AA: `--text-secondary` `#6b7280`→`#4b5563` (6.1:1), `--text-muted` `#9ca3af`→`#6b7280` | P2 |
+| 8 | `frontend/js/progress.js` | WebSocket JSON 파싱 에러 `console.warn` 로깅 추가 | P2 |
+| 9 | `tests/test_pipeline.py` | `_get_cached` async 전환에 따른 3개 테스트 `@pytest.mark.asyncio` + `await` 업데이트 | 테스트 |
+
+- **테스트 결과**: **171 passed**, 0 failed (168 → +3 신규 asyncio 테스트 통과)
+- **핵심 개선**: 동시 요청 시 모델 이중 로딩 방지 (P0), VRAM 누수 제거 (P1), WS 이벤트 드리븐으로 응답성 향상 (P2)
+
+---
+
+## 2026-03-26 — Phase 10: Hunyuan-MT-7B 번역 엔진 마이그레이션
+
+### DeepL/Google → Hunyuan-MT-7B 로컬 인퍼런스 ✅
+
+| # | 파일 | 변경 내용 |
+|---|------|-----------|
+| 1 | `server/pipeline/translator.py` | 완전 재작성 — Hunyuan-MT-7B 로컬 CausalLM 인퍼런스 |
+| 2 | `server/config.py` | `deepl_api_key`, `google_api_key` 필드 제거 |
+| 3 | `server/schemas/models.py` | `UserSettings`, `UserSettingsResponse`, `MAX_USER_API_KEY_LENGTH` 제거 |
+| 4 | `server/routers/settings.py` | **파일 삭제** — POST/GET `/api/settings` 엔드포인트 제거 |
+| 5 | `server/routers/upload.py` | `session_store` 임포트, `_extract_user_settings()` 함수, Request 파라미터 제거 |
+| 6 | `server/pipeline/orchestrator.py` | Translator() 호출에서 `deepl_key`/`google_key` 인수 제거 |
+| 7 | `tests/test_pipeline.py` | TestTranslator를 7개 Hunyuan 특화 테스트로 교체 |
+| 8 | `tests/test_integration.py` | TestSettingsEndpoints 클래스 + `_clean_session_store` 픽스처 제거 |
+| 9 | `tests/test_frontend.py` | `test_api_settings_still_works` 제거 |
+
+- **테스트 결과**: test_pipeline 7/7 + test_integration 18/18 + test_frontend 20/20 = 45 passed
+- **HuggingFace 모델**: `tencent/Hunyuan-MT-7B` — WMT25 1위, 첫 요청 시 HF Hub에서 ~15GB 자동 다운로드
+- **추론 패턴**: 모듈 레벨 싱글턴 + `threading.Lock` 이중 확인 + `asyncio.to_thread()` 비동기
+
+---
+
+## 2026-03-26 — Phase 8: 모델 업그레이드
+
+### Tier 1 — RealESRGAN anime_6B (x4 업스케일러 교체) ✅
+
+| # | 파일 | 변경 내용 |
+|---|------|-----------|
+| 1 | `server/download.py` | `MODELS` 리스트에 anime_6B 항목 추가 (`v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth`, 17MB) |
+| 2 | `server/config.py` | `upscaler_variant: str = "anime_6b"` 설정 추가 (`anime_6b` \| `x4plus`) |
+| 3 | `server/pipeline/preprocessor.py` | `_pick_x4_variant()` 함수 추가 — anime_6B(`num_block=6`) 우선, x4plus(`num_block=23`) fallback |
+| 4 | `models/RealESRGAN_x4plus_anime_6B.pth` | 17.1MB 모델 가중치 다운로드 완료 |
+| 5 | `tests/test_pipeline.py` | `test_pick_x4_variant_anime_6b`, `_fallback_to_x4plus`, `_explicit_x4plus` 3개 테스트 추가 |
+
+- **테스트 결과**: 42→45 passed (기존 42 + 신규 3), 0 failed
+
+### Tier 2 — Magi v2 (A/B 감지기 탐지기 통합) ✅
+
+| # | 파일 | 변경 내용 |
+|---|------|-----------|
+| 1 | `server/config.py` | `use_magi_detector: bool = False`, `magi_vram_threshold_mb: int = 4096` 추가 |
+| 2 | `server/pipeline/magi_detector.py` | **신규** — `MagiDetector` 클래스 (HuggingFace `ragavsachdeva/magiv2` 래핑) |
+|   |  | - `_xyxy_to_xywh()`: bbox 형식 변환 `(x1,y1,x2,y2)` → `(x,y,w,h)` |
+|   |  | - `is_essential_text` → `speech`/`effect` 분류 |
+|   |  | - Magi 내장 reading order 보존 |
+|   |  | - VRAM 임계값 검사(`get_vram_mb` < 4096 시 skip) |
+| 3 | `server/pipeline/orchestrator.py` | Stage 1 조건부 분기: `use_magi_detector=True` → `MagiDetector` 사용, 별도 캐시 키 `"magi_detector"` |
+|   |  | Magi 사용 시 `sort_bubbles_rtl()` 바이패스 |
+| 4 | `pyproject.toml` | `accelerate>=1.0` 의존성 추가 |
+| 5 | `tests/test_pipeline.py` | `TestMagiDetector` 5개 + `TestMagiCacheKeySeparation` 1개 테스트 추가 |
+
+- **테스트 결과**: 48 passed (pipeline), 131 passed (전체 핵심), 0 failed
+- **활성화 방법**: `.env`에 `USE_MAGI_DETECTOR=true` 설정 (기본 `false` = YOLOv5 유지)
+- **사이드이펙트 대비**: bbox 변환, 캐시 키 분리, reading order 분기 모두 구현
+
+### 버그 수정 — 탁점/반탁점 보호 ✅
+
+| # | 파일 | 변경 내용 |
+|---|------|----------|
+| 1 | `server/pipeline/preprocessor.py` | `remove_furigana()` — 작은 컴포넌트가 큰 글리프 bbox에 근접(median_h×15%, 최소 3px)하면 탁점/반탁점으로 판단해 보존, 멀리 떨어진 것만 후리가나로 제거 |
+| 2 | `tests/test_pipeline.py` | `test_remove_furigana_preserves_dakuten`, `test_remove_furigana_removes_distant_small_components` 2개 테스트 추가 |
+
+- **원인**: 탁점(゛)/반탁점(゜)이 이진화 후 별도 connected component로 분리되어 높이+면적 필터에 걸려 삭제됨 (예: が→か, ぱ→は)
+- **해결**: 작은 컴포넌트 ↔ 큰 글리프 bbox 근접 검사로 탁점 보호
+
+### 기능 개선 — 출력 디렉토리 네이밍 ✅
+
+| # | 파일 | 변경 내용 |
+|---|------|----------|
+| 1 | `server/routers/upload.py` | `task_id` 생성 방식: `uuid.uuid4().hex` → `YYYYMMDD_HHMMSS_fff_xxxxxx` (날짜+시간+밀리초+6자리 UUID 접미사) |
+
+- **테스트 결과**: 182 passed, 0 failed

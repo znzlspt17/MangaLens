@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-MAX_USER_API_KEY_LENGTH = 512
-
 
 # ---------------------------------------------------------------------------
 # Health
@@ -59,23 +57,6 @@ class TranslationResult(BaseModel):
     task_id: str
     images: list[str] = Field(default_factory=list)
     translation_log_url: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# User settings
-# ---------------------------------------------------------------------------
-
-class UserSettings(BaseModel):
-    """Input model for POST /api/settings."""
-    deepl_api_key: str | None = Field(default=None, max_length=MAX_USER_API_KEY_LENGTH)
-    google_api_key: str | None = Field(default=None, max_length=MAX_USER_API_KEY_LENGTH)
-
-
-class UserSettingsResponse(BaseModel):
-    """Response model with masked keys."""
-    deepl_api_key: str | None = None
-    google_api_key: str | None = None
-    session_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
