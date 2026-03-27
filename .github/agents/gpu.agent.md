@@ -30,7 +30,7 @@ rocm-smi 실행 가능? → ROCm 경로
 
 ### Target Environments
 pyproject.toml의 `[tool.uv.index]`에서 PyTorch 인덱스를 GPU 환경에 맞게 설정:
-- **CUDA 130** (NVIDIA): `url = "https://download.pytorch.org/whl/cu130"`
+- **CUDA 128** (NVIDIA): `url = "https://download.pytorch.org/whl/cu128"`
 - **ROCm 6.3 gfx1201** (AMD): `url = "https://download.pytorch.org/whl/rocm6.3"`
 - **CPU**: `url = "https://download.pytorch.org/whl/cpu"`
 

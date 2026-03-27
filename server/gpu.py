@@ -98,50 +98,71 @@ def _detect_nvidia() -> GPUInfo | None:
     )
 
 
-def _parse_rocm_gfx_arch() -> str:
-    """Return the GFX arch string (e.g. 'gfx1201') from rocminfo, or ''."""
+def _parse_rocminfo() -> tuple[str, str]:
+    """Parse rocminfo to get (gfx_arch, marketing_name).
+
+    Returns e.g. ("gfx1201", "AMD Radeon RX 9070 XT").
+    Falls back to ("", "AMD GPU") on failure.
+    """
     out = _run_cmd(["rocminfo"])
     if not out:
-        return ""
+        return "", "AMD GPU"
+
+    gfx_arch = ""
+    marketing_name = "AMD GPU"
+
+    # Find GPU agent section (has "Device Type:  GPU")
+    in_gpu_agent = False
     for line in out.splitlines():
         stripped = line.strip()
         if stripped.startswith("Name:") and "gfx" in stripped:
-            return stripped.split("gfx")[-1]
-    return ""
+            gfx_arch = "gfx" + stripped.split("gfx")[-1].strip()
+            in_gpu_agent = True
+        elif in_gpu_agent and stripped.startswith("Marketing Name:"):
+            name = stripped.split(":", 1)[-1].strip()
+            if name:
+                marketing_name = name
+            break
+
+    return gfx_arch, marketing_name
 
 
 def _detect_rocm() -> GPUInfo | None:
-    """Try to detect AMD ROCm GPU via rocm-smi."""
-    if not shutil.which("rocm-smi"):
+    """Try to detect AMD ROCm GPU.
+
+    Uses rocminfo as primary source (works in WSL2 where rocm-smi
+    may fail due to missing amdgpu kernel module).
+    VRAM is queried from PyTorch when rocm-smi is unavailable.
+    """
+    # Primary detection via rocminfo (works on both native and WSL2)
+    if not shutil.which("rocminfo"):
         return None
 
-    # Query basic info
-    out = _run_cmd(["rocm-smi", "--showproductname"])
-    gpu_name = "AMD GPU"
-    if out:
-        for line in out.splitlines():
-            line_stripped = line.strip()
-            if line_stripped and "GPU" not in line_stripped.upper().split()[0:1]:
-                # Try to find a product name line
-                if "Card" in line_stripped or ":" in line_stripped:
-                    name_part = line_stripped.split(":")[-1].strip()
-                    if name_part:
-                        gpu_name = name_part
-                        break
+    gfx_arch, gpu_name = _parse_rocminfo()
+    if not gfx_arch:
+        return None
 
-    # VRAM
+    # Auto-set environment variables for gfx1201 (RDNA 4)
+    if "1201" in gfx_arch:
+        os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "12.0.1")
+        os.environ.setdefault("PYTORCH_ROCM_ARCH", "gfx1201")
+        logger.info(
+            "ROCm %s detected — set HSA_OVERRIDE_GFX_VERSION=12.0.1, "
+            "PYTORCH_ROCM_ARCH=gfx1201",
+            gfx_arch,
+        )
+
+    # Try VRAM from rocm-smi first (native Linux)
     vram_mb = 0
     vram_out = _run_cmd(["rocm-smi", "--showmeminfo", "vram"])
     if vram_out:
         for line in vram_out.splitlines():
             if "Total" in line:
                 try:
-                    # Value is typically in bytes or MB
                     parts = line.split()
-                    for i, p in enumerate(parts):
+                    for p in parts:
                         if p.replace(".", "").isdigit():
                             val = int(float(p))
-                            # If value > 100000, likely bytes → convert
                             if val > 100_000:
                                 vram_mb = val // (1024 * 1024)
                             else:
@@ -150,19 +171,6 @@ def _detect_rocm() -> GPUInfo | None:
                 except (ValueError, IndexError):
                     pass
 
-    # Detect GFX architecture
-    gfx_raw = _parse_rocm_gfx_arch()
-    gfx_arch = f"gfx{gfx_raw}" if gfx_raw else ""
-
-    # Auto-set environment variables for gfx1201
-    if "1201" in gfx_raw:
-        os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "12.0.1")
-        os.environ.setdefault("PYTORCH_ROCM_ARCH", "gfx1201")
-        logger.info(
-            "ROCm gfx1201 detected — set HSA_OVERRIDE_GFX_VERSION=12.0.1, "
-            "PYTORCH_ROCM_ARCH=gfx1201"
-        )
-
     # Verify torch HIP availability
     try:
         import torch
@@ -170,10 +178,15 @@ def _detect_rocm() -> GPUInfo | None:
         hip_available = getattr(torch.version, "hip", None) is not None
         if not hip_available:
             logger.warning(
-                "rocm-smi found but torch is not built with ROCm/HIP support"
+                "rocminfo found GPU but torch is not built with ROCm/HIP support"
             )
             return None
         rocm_version = torch.version.hip or ""
+
+        # Fall back to PyTorch for VRAM (WSL2: rocm-smi may not work)
+        if vram_mb == 0 and torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            vram_mb = props.total_mem // (1024 * 1024)
     except ImportError:
         logger.warning("PyTorch not installed; cannot verify ROCm")
         return None
