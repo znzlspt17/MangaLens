@@ -32,7 +32,7 @@ fonts/*.otf
 *:Zone.Identifier
 
 # Generated test results
-resources/result/
+resources
 
 # Internal planning / session notes
 memories/idea.txt

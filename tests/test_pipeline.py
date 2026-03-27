@@ -571,39 +571,53 @@ class TestTextRenderer:
         """Empty text should produce an all-zero RGBA image."""
         img = np.zeros((80, 60, 3), dtype=np.uint8)
         bbox = (0, 0, 60, 80)
-        result, font_size = await renderer.render(img, "", bbox)
+        result, font_size, adj_bbox = await renderer.render(img, "", bbox)
         assert result.shape == (80, 60, 4)
         assert result.max() == 0
         assert font_size == 0
 
     async def test_output_is_rgba(self, renderer):
-        """render() always returns (RGBA array, font_size) tuple."""
+        """render() returns (RGBA array, font_size, adj_bbox) tuple."""
         img = np.zeros((80, 60, 3), dtype=np.uint8)
         bbox = (0, 0, 60, 80)
-        result, font_size = await renderer.render(img, "테스트", bbox)
+        result, font_size, adj_bbox = await renderer.render(img, "테스트", bbox)
         assert result.ndim == 3
         assert result.shape[2] == 4
         assert isinstance(font_size, int)
         assert font_size > 0
+        assert len(adj_bbox) == 4
 
     async def test_horizontal_direction(self, renderer):
         """Horizontal text renders without error and returns positive font size."""
         img = np.zeros((100, 200, 3), dtype=np.uint8)
         bbox = (0, 0, 200, 100)
-        result, font_size = await renderer.render(img, "테스트 문장", bbox, text_direction="horizontal")
+        result, font_size, adj_bbox = await renderer.render(img, "테스트 문장", bbox, text_direction="horizontal")
         assert result.shape[2] == 4
         assert font_size > 0
+        # For horizontal source, adj_bbox x,y must match original bbox
+        assert adj_bbox[0] == 0 and adj_bbox[1] == 0
 
     async def test_vertical_source_rendered_horizontal(self, renderer):
-        """Korean translation from a vertical Japanese bubble must render horizontal."""
+        """Korean translation from a vertical Japanese bubble must render horizontal.
+        The overlay must be *wider* than the original narrow bbox, and adj_bbox
+        must be centred on the original centre so text doesn't clip.
+        """
         img = np.zeros((300, 50, 3), dtype=np.uint8)
         bbox = (0, 0, 50, 300)
-        result, font_size = await renderer.render(
+        result, font_size, adj_bbox = await renderer.render(
             img, "한국어 번역 테스트", bbox, text_direction="vertical"
         )
         assert result.shape[2] == 4
         # Overlay must contain some non-zero pixels (text was actually drawn)
         assert result.max() > 0, "Korean text must be rendered even on vertical-source bbox"
+        # Phase-19 fix: render_w = _vert_cap = max(bw*4, 80)
+        # bw=50, bh=300 → _vert_cap=max(200,80)=200 → render_w=200
+        expected_render_w = max(50 * 4, 80)  # 200
+        assert result.shape[1] == expected_render_w, (
+            f"Overlay width {result.shape[1]} should be {expected_render_w} for vert→horiz"
+        )
+        # adj_bbox width must also equal the expanded overlay width
+        assert adj_bbox[2] == result.shape[1]
 
     async def test_narrow_bbox_does_not_produce_empty_overlay(self, renderer):
         """Regression: narrow Japanese speech bubble bbox (w=23) rendered Korean text
@@ -616,7 +630,7 @@ class TestTextRenderer:
         # Typical narrow vertical speech bubble bbox from Japanese manga
         bbox = (0, 0, 23, 82)
         text = "그럼 유리하마로 가볼게요~!"
-        result, font_size = await renderer.render(img, text, bbox, text_direction="vertical")
+        result, font_size, adj_bbox = await renderer.render(img, text, bbox, text_direction="vertical")
         assert result.shape[2] == 4
         assert font_size >= _MIN_FONT_SIZE, (
             f"font_size={font_size} < _MIN_FONT_SIZE={_MIN_FONT_SIZE}: "
@@ -624,6 +638,11 @@ class TestTextRenderer:
         )
         assert result.max() > 0, (
             "Overlay is completely empty — Korean text not rendered in narrow bbox"
+        )
+        # The overlay width must be _vert_cap = max(23*4, 80) = 92
+        expected_w = max(23 * 4, 80)  # 92
+        assert result.shape[1] == expected_w, (
+            f"Overlay width {result.shape[1]} should be {expected_w} for vert→horiz conversion"
         )
 
     async def test_very_narrow_bbox_width_10(self, renderer):
@@ -633,9 +652,15 @@ class TestTextRenderer:
         img = np.zeros((91, 10, 3), dtype=np.uint8)
         bbox = (0, 0, 10, 91)
         text = "슈바츠메우~!"
-        result, font_size = await renderer.render(img, text, bbox, text_direction="vertical")
+        result, font_size, adj_bbox = await renderer.render(img, text, bbox, text_direction="vertical")
         assert result.shape[2] == 4
         assert result.max() > 0, "w=10 bbox must still produce visible Korean text"
+        # Phase-19 fix: render_w = _vert_cap = max(bw*4, 80)
+        # bw=10, bh=91 → _vert_cap=max(40,80)=80 → render_w=80
+        expected_render_w = max(10 * 4, 80)  # 80
+        assert result.shape[1] == expected_render_w, (
+            f"Overlay width {result.shape[1]} should be {expected_render_w} (capped) for w=10 vert→horiz"
+        )
 
     async def test_narrow_bbox_text_not_severely_truncated(self, renderer):
         """Regression (e347732c): for a narrow vertical speech bubble (w=23, h=82),
@@ -657,28 +682,34 @@ class TestTextRenderer:
         bbox = (0, 0, 23, 82)
         text = "그럼 유리하마로 가볼게요~!"  # 16 chars → 16 lines at usable_w=11px
 
-        result, font_size = await renderer.render(img, text, bbox, text_direction="vertical")
+        result, font_size, adj_bbox = await renderer.render(img, text, bbox, text_direction="vertical")
 
-        # Compute actual lines that WOULD be needed at the returned font_size
+        # For vert→horiz, render_w = _vert_cap = max(23*4, 80) = 92
+        render_w = max(23 * 4, 80)  # 92
         font = renderer._load_font(font_size)
-        usable_w = max(23 - _PADDING * 2, 1)
+        usable_w = max(render_w - _PADDING * 2, 1)
         lines = renderer._wrap_text(text, font, usable_w)
-        line_height = int(font_size * _LINE_HEIGHT_RATIO_MANY)
-        needed_h = len(lines) * line_height + _PADDING * 2
+        num_lines = len(lines)
+        lhr = _LINE_HEIGHT_RATIO_MANY if num_lines > 2 else 1.3
+        line_height = int(font_size * lhr)
+        needed_h = num_lines * line_height + _PADDING * 2
 
+        # Overlay width must be the expanded render_w (_vert_cap)
+        assert result.shape[1] == render_w, (
+            f"Overlay width {result.shape[1]} must be {render_w} (_vert_cap render width)"
+        )
+        # Overlay height must hold all wrapped lines
         assert result.shape[0] >= needed_h, (
-            f"Overlay height {result.shape[0]}px cannot fit {len(lines)} wrapped lines "
+            f"Overlay height {result.shape[0]}px cannot fit {num_lines} wrapped lines "
             f"(needs {needed_h}px at font_size={font_size}). "
-            f"Characters beyond line {result.shape[0] // line_height} are silently clipped. "
-            "Pipeline fix: expand overlay height to `needed_h` and update compositor "
-            "to use overlay.shape[0] instead of bbox h."
+            f"Characters beyond line {result.shape[0] // line_height} are silently clipped."
         )
 
     async def test_font_size_used_nonzero_for_nonempty_text(self, renderer):
         """font_size_used must be > 0 whenever text is non-empty (P5 log correctness)."""
         img = np.zeros((100, 100, 3), dtype=np.uint8)
         bbox = (0, 0, 100, 100)
-        _, font_size = await renderer.render(img, "테스트", bbox)
+        _, font_size, _adj = await renderer.render(img, "테스트", bbox)
         assert font_size > 0, "font_size_used must not be 0 when text is non-empty"
 
     def test_font_not_found_uses_default(self, tmp_path):

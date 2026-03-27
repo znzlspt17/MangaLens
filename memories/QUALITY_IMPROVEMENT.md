@@ -1,6 +1,6 @@
 # MangaLens — 번역 & 렌더링 품질 개선 계획
 
-> 작성일: 2026-03-26 | 기반: Phase 14 이후 실제 번역 로그 분석
+> 작성일: 2026-03-26 | 최종 갱신: 2026-03-27 (Phase 17 완료 — N1~N7 수정) | 기반: Phase 14 이후 실제 번역 로그 분석
 
 ---
 
@@ -147,15 +147,15 @@
 - **난이도**: ★☆☆☆☆
 - **상태**: ✅ 완료 — `_LINE_HEIGHT_RATIO_FEW=1.3` / `_LINE_HEIGHT_RATIO_MANY=1.2`
 
-#### B-5. 말풍선 배경 기반 자동 색상
+#### B-5. 말풍선 배경 기반 자동 색상 ✅ 완료 (Phase 17, N7)
 
-- **현재**: 무조건 검정 텍스트 + 흰 윤곽
-- **개선**: inpainted bubble 영역 평균 밝기 분석
-  - 밝은 배경(>180): 검정 글씨 + 흰 윤곽 (현재)
-  - 어두운 배경(<80): 흰 글씨 + 검정 윤곽
-  - 중간: 적응형
-- **난이도**: ★★☆☆☆
-- **상태**: 미착수
+- **이전**: 무조건 검정 텍스트 + 흰 윤곽
+- **수정**: `render()` — bbox 영역 BGR 평균 밝기 계산 (luminance 가중치 0.114/0.587/0.299)
+  - 밝기 < 128 → 흰 글씨 + 검정 윤곽
+  - 밝기 ≥ 128 → 검정 글씨 + 흰 윤곽 (기존 동작)
+- `_draw_horizontal()` / `_draw_vertical()` 에 `text_color`, `stroke_color` 파라미터 추가
+- **파일**: `server/pipeline/text_renderer.py`
+- **상태**: ✅ 완료
 
 #### B-6. 줄바꿈 시 좌측 글자 잘림 방지 ✅ 완료
 
@@ -166,6 +166,28 @@
 - **파일**: `server/pipeline/text_renderer.py`
 - **난이도**: ★☆☆☆☆
 - **상태**: ✅ 완료 (Phase 15, D-022)
+
+#### B-7. 탁음/반탁음 오삭제 방지 강화 ✅ 완료 (Phase 16)
+
+- **현재(수정 전)**: `remove_furigana()`의 padding이 `median_h × 0.15`(≈4px)로 너무 작아, 실제 11-29px 거리의 탁음 점(゛゜)이나 ellipsis(．)까지 흰색으로 지워짐
+- **수정 내용**:
+  - `pad = max(median_h * 0.30, 3.0)` — 패딩 2배 증가
+  - column-overlap 체크 추가: 소형 component의 x범위가 대형 component 중 하나와 겹치면 보존 (`if sx1 < lx2 and sx2 > lx1: near_large = True`)
+- **파일**: `server/pipeline/preprocessor.py`
+- **검증**: P22 ID3 기준 잘못 삭제된 픽셀 612 → 0
+- **난이도**: ★☆☆☆☆
+- **상태**: ✅ 완료 (Phase 16, D-023)
+
+#### B-8. 수직 말풍선 텍스트 크기 과소/과대 수정 ✅ 완료 (Phase 16)
+
+- **현재(수정 전)**: 세로쓰기 원본 말풍선에서 `fit_h = max(bw, _MIN_FONT_SIZE * 3)` — 좁은 bw=24px 말풍선에서 항상 최소 12px 폰트 강제. `actual_render_h = needed_h`에 상한 없어 bh 초과 가능
+- **수정 내용**:
+  - `fit_h = bh` — 말풍선 전체 높이를 폰트 탐색 상한으로 사용
+  - `actual_render_h = min(needed_h, bh)` — 세로 오버플로우 방지
+- **파일**: `server/pipeline/text_renderer.py`
+- **검증**: 폰트 크기 12px → 25px+, 세로 오버플로우 제거, 33/33 페이지 정상 렌더링
+- **난이도**: ★☆☆☆☆
+- **상태**: ✅ 완료 (Phase 16, D-024)
 
 ---
 
@@ -204,8 +226,35 @@
 
 - [x] A-1 문맥 윈도우 번역 (가장 큰 품질 향상, 구현 복잡도 높음)
 
-### Sprint 4 — 후처리 강화
+### Sprint 4 — 후처리 강화 (현재 단계)
 
 - [ ] A-3 OCR 후처리 보정
 - [ ] A-4 번역 후처리 강화
 - [ ] B-5 자동 색상
+
+> **Phase 16 완료 (2026-03-27)**: B-7 탁음/반탁음 오삭제 방지, B-8 수직 말풍선 텍스트 크기 수정
+> 테스트 결과: 33/33 페이지 성공, 282 버블, 미번역 0, pytest 126/126 ✅
+
+> **Phase 17 완료 (2026-03-27)**: N1~N7 노이즈 근본 원인 7건 수정 (bubble_detector, text_renderer, text_eraser, translator)
+> pytest 187/187 ✅
+
+---
+
+## 5. Phase 17 노이즈 분석 결과 (2026-03-27)
+
+### 분석 데이터
+- `output/phase19_final/` — 33페이지, 273개 말풍선 전수 분석
+- Vertical: 229건, Horizontal: 44건
+
+### 식별된 노이즈 원인 및 수정 현황
+
+| # | 원인 | 영향 | 파일 | 수정 내용 | 상태 |
+|---|------|------|------|----------|------|
+| N1 | `_PROXIMITY_GAP=10` 너무 작아 세로쓰기 컬럼 30건이 초협소 bbox | 11% | `bubble_detector.py` | 10→25 | ✅ |
+| N2 | `font_size×0.85` scale-down이 horizontal 82%를 강제 fs=12로 | 13% | `text_renderer.py` | scale-down 제거 | ✅ |
+| N3 | `_MAX_VERT_FONT_SIZE=24` 캡이 세로 버블 전체(229건)를 최대 24px로 묶음 | 84% | `text_renderer.py` | 24→36 | ✅ |
+| N4 | 배치 번역 실패 + fallback이 원문(일본어) 반환 | 3% | `translator.py` | _JA_KANA_RE 가나 감지 → `""` 반환 | ✅ |
+| N5 | JA→KO 팽창(평균 1.5x) — 프롬프트 간결성 지시 없음 | 전체 | `translator.py` | 규칙 7 "원문 분량 유지" 추가 | ✅ |
+| N6 | inpainting 마스크 `(9,9)×3` 과도 확장 → 아티팩트 | 전체 | `text_eraser.py` | `(7,7)×2` | ✅ |
+| N7 | 어두운 배경 말풍선에 검정 글씨 — 불가독 | 어두운 버블 | `text_renderer.py` | 밝기 기반 자동 색상 | ✅ |
+

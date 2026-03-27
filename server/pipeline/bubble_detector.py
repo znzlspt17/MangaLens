@@ -27,7 +27,132 @@ _MODEL_INPUT_SIZE = 1024
 _CONF_THRESH = 0.35
 _NMS_IOU = 0.45
 _MERGE_IOU = 0.25  # post-NMS overlap threshold: merge boxes that overlap this much
+_PROXIMITY_GAP = 25  # max edge-to-edge gap (px, model space) for proximity merge
 _MIN_AREA = 100
+_SEG_THRESHOLD = 0.4  # text_seg sigmoid threshold for bubble interior
+
+
+# ------------------------------------------------------------------
+# UnetHead helper modules (matching comic-text-detector's architecture)
+# ------------------------------------------------------------------
+
+class _CTDConv:
+    """Placeholder — defined later inside torch-available scope."""
+
+
+class _CTDBottleneck:
+    """Placeholder — defined later inside torch-available scope."""
+
+
+def _build_unet_classes():
+    """Build UnetHead module classes after torch/nn is confirmed available."""
+    import torch.nn as nn
+
+    class CTDConv(nn.Module):
+        """Conv + BN + LeakyReLU(0.1), matching comic-text-detector Conv."""
+        def __init__(self, c1: int, c2: int, k: int = 1, s: int = 1, p: int | None = None) -> None:
+            super().__init__()
+            if p is None:
+                p = (k - 1) // 2
+            self.conv = nn.Conv2d(c1, c2, k, s, p, bias=False)
+            self.bn = nn.BatchNorm2d(c2)
+            self.act = nn.LeakyReLU(0.1, inplace=True)
+
+        def forward(self, x):
+            return self.act(self.bn(self.conv(x)))
+
+    class CTDBottleneck(nn.Module):
+        """YOLOv5-style Bottleneck (cv1=1×1, cv2=3×3)."""
+        def __init__(self, c1: int, c2: int, shortcut: bool = True, e: float = 0.5) -> None:
+            super().__init__()
+            import math
+            c_ = int(c2 * e)
+            self.cv1 = CTDConv(c1, c_, 1, 1)
+            self.cv2 = CTDConv(c_, c2, 3, 1)
+            self.add = shortcut and c1 == c2
+
+        def forward(self, x):
+            import torch
+            return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
+    class CTDC3(nn.Module):
+        """Cross-stage partial (C3) block matching comic-text-detector C3."""
+        def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = True, e: float = 0.5) -> None:
+            super().__init__()
+            c_ = int(c2 * e)
+            self.cv1 = CTDConv(c1, c_, 1, 1)
+            self.cv2 = CTDConv(c1, c_, 1, 1)
+            self.cv3 = CTDConv(2 * c_, c2, 1, 1)
+            self.m = nn.Sequential(*(CTDBottleneck(c_, c_, shortcut, e=1.0) for _ in range(n)))
+
+        def forward(self, x):
+            import torch
+            return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim=1))
+
+    class UnetDown(nn.Module):
+        """double_conv_c3 with stride=2: AvgPool2d → C3."""
+        def __init__(self, in_ch: int, out_ch: int) -> None:
+            super().__init__()
+            self.down = nn.AvgPool2d(2, stride=2)
+            self.conv = CTDC3(in_ch, out_ch, n=1)
+
+        def forward(self, x):
+            return self.conv(self.down(x))
+
+    class UnetUp(nn.Module):
+        """double_conv_up_c3: C3 → ConvTranspose2d (×2 upsample)."""
+        def __init__(self, c_in: int, c_mid: int, c_out: int) -> None:
+            super().__init__()
+            self.conv = nn.Sequential(
+                CTDC3(c_in, c_mid, n=1),
+                nn.ConvTranspose2d(c_mid, c_out, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(c_out),
+                nn.ReLU(inplace=True),
+            )
+
+        def forward(self, x):
+            return self.conv(x)
+
+    class UnetHead(nn.Module):
+        """Segmentation decoder from comictextdetector.pt 'text_seg' head.
+
+        Consumes backbone features at model output indices [1, 3, 5, 7, 9]
+        and returns a (B, 1, H, W) float mask in [0, 1] at input resolution.
+        """
+        # Model output indices for the five backbone feature levels
+        FEAT_IDX = [1, 3, 5, 7, 9]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.down_conv1 = UnetDown(512, 512)
+            self.upconv0 = UnetUp(512, 512, 256)
+            self.upconv2 = UnetUp(768, 512, 256)   # cat(f20=512, u20=256) → 768
+            self.upconv3 = UnetUp(512, 512, 256)   # cat(f40=256, u40=256) → 512
+            self.upconv4 = UnetUp(384, 256, 128)   # cat(f80=128, u80=256) → 384
+            self.upconv5 = UnetUp(192, 128, 64)    # cat(f160=64, u160=128) → 192
+            self.upconv6 = nn.Sequential(
+                nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.Sigmoid(),
+            )
+
+        def forward(self, feats: list) -> "torch.Tensor":
+            import torch
+            f160 = feats[1]   # (B, 64,  H/4,  W/4)
+            f80  = feats[3]   # (B, 128, H/8,  W/8)
+            f40  = feats[5]   # (B, 256, H/16, W/16)
+            f20  = feats[7]   # (B, 512, H/32, W/32)
+            f3   = feats[9]   # (B, 512, H/32, W/32) after SPPF
+            d10  = self.down_conv1(f3)
+            u20  = self.upconv0(d10)
+            u40  = self.upconv2(torch.cat([f20, u20], dim=1))
+            u80  = self.upconv3(torch.cat([f40, u40], dim=1))
+            u160 = self.upconv4(torch.cat([f80, u80],  dim=1))
+            u320 = self.upconv5(torch.cat([f160, u160], dim=1))
+            return self.upconv6(u320)
+
+    return UnetHead
+
+_UnetHead = None  # populated lazily when torch is available
 
 
 def _merge_overlapping_boxes(
@@ -113,6 +238,103 @@ def _merge_overlapping_boxes(
     return boxes, scores, cls_ids
 
 
+def _merge_proximity_boxes(
+    boxes: "np.ndarray",
+    scores: "np.ndarray",
+    cls_ids: "np.ndarray",
+    gap_thresh: float,
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+    """Merge boxes whose edges are within *gap_thresh* px even if IoU == 0.
+
+    Two boxes are merged when:
+    1. Their edge-to-edge gap ≤ *gap_thresh* on BOTH axes, AND
+    2. They share significant overlap on at least one axis (≥ 30 % of the
+       smaller box's span on that axis).
+
+    This catches vertically-stacked narrow text strips that the YOLO
+    detector fragments into separate boxes for the same speech bubble.
+    """
+    if len(boxes) < 2:
+        return boxes, scores, cls_ids
+
+    merged = True
+    boxes = boxes.copy()
+    scores = scores.copy()
+    cls_ids = cls_ids.copy()
+
+    while merged:
+        merged = False
+        used = [False] * len(boxes)
+        new_boxes, new_scores, new_cls = [], [], []
+
+        for i in range(len(boxes)):
+            if used[i]:
+                continue
+            b1 = boxes[i]
+            best_j = -1
+            best_gap = gap_thresh + 1
+
+            for j in range(i + 1, len(boxes)):
+                if used[j]:
+                    continue
+                b2 = boxes[j]
+
+                # Edge-to-edge gap on each axis (0 if overlapping)
+                h_gap = max(0.0, max(b2[0] - b1[2], b1[0] - b2[2]))
+                v_gap = max(0.0, max(b2[1] - b1[3], b1[1] - b2[3]))
+
+                if h_gap > gap_thresh or v_gap > gap_thresh:
+                    continue
+
+                # Axis-overlap check: at least 30 % overlap on one axis
+                x_overlap = max(0.0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
+                y_overlap = max(0.0, min(b1[3], b2[3]) - max(b1[1], b2[1]))
+                w1, w2 = b1[2] - b1[0], b2[2] - b2[0]
+                h1, h2 = b1[3] - b1[1], b2[3] - b2[1]
+                min_w = min(w1, w2) if min(w1, w2) > 0 else 1
+                min_h = min(h1, h2) if min(h1, h2) > 0 else 1
+
+                x_ratio = x_overlap / min_w
+                y_ratio = y_overlap / min_h
+
+                if x_ratio < 0.3 and y_ratio < 0.3:
+                    continue
+
+                gap = max(h_gap, v_gap)
+                if gap < best_gap:
+                    best_gap = gap
+                    best_j = j
+
+            if best_j >= 0:
+                b2 = boxes[best_j]
+                merged_box = np.array([
+                    min(b1[0], b2[0]),
+                    min(b1[1], b2[1]),
+                    max(b1[2], b2[2]),
+                    max(b1[3], b2[3]),
+                ], dtype=boxes.dtype)
+                new_boxes.append(merged_box)
+                new_scores.append(max(scores[i], scores[best_j]))
+                if (b1[2] - b1[0]) * (b1[3] - b1[1]) >= (b2[2] - b2[0]) * (b2[3] - b2[1]):
+                    new_cls.append(cls_ids[i])
+                else:
+                    new_cls.append(cls_ids[best_j])
+                used[i] = True
+                used[best_j] = True
+                merged = True
+            else:
+                new_boxes.append(b1)
+                new_scores.append(scores[i])
+                new_cls.append(cls_ids[i])
+                used[i] = True
+
+        boxes = np.array(new_boxes, dtype=boxes.dtype) if new_boxes else boxes[:0]
+        scores = np.array(new_scores, dtype=scores.dtype) if new_scores else scores[:0]
+        cls_ids = np.array(new_cls, dtype=cls_ids.dtype) if new_cls else cls_ids[:0]
+
+    return boxes, scores, cls_ids
+
+
 @dataclass
 class BubbleInfo:
     """Detected speech bubble metadata."""
@@ -130,7 +352,7 @@ class BubbleInfo:
 # ------------------------------------------------------------------
 
 def _build_detector(weight_path: str, device: str):
-    """Build a YOLOv5s backbone + detect head from blk_det weights."""
+    """Build YOLOv5s backbone + detect head + UnetHead seg from comictextdetector.pt."""
     try:
         import torch
         import torch.nn as nn
@@ -198,16 +420,34 @@ def _build_detector(weight_path: str, device: str):
     anchors = blk["weights"]["model.24.anchors"].float()
     strides = torch.tensor([8.0, 16.0, 32.0])
 
+    # ── Build text_seg (UnetHead) ──────────────────────────────────────────
+    seg_head = None
+    if "text_seg" in state:
+        try:
+            global _UnetHead
+            if _UnetHead is None:
+                _UnetHead = _build_unet_classes()
+            seg_head = _UnetHead()
+            seg_head.load_state_dict(state["text_seg"], strict=True)
+            seg_head.to(device).eval()
+            logger.info("text_seg (UnetHead) loaded on %s", device)
+        except Exception:
+            logger.warning("text_seg load failed — bubble masks will be rectangular", exc_info=True)
+            seg_head = None
+    else:
+        logger.warning("text_seg key not found in weights — bubble masks will be rectangular")
+
     class _DetectorModel(nn.Module):
         FEAT_IDX = [17, 20, 23]
 
-        def __init__(self, bb, convs, anch, strd, nc_):
+        def __init__(self, bb, convs, anch, strd, nc_, seg):
             super().__init__()
             self.backbone = bb
             self.det_convs = convs
             self.register_buffer("anchors", anch)
             self.register_buffer("strides", strd)
             self.nc = nc_
+            self.seg_head = seg  # _UnetHead or None
 
         def forward(self, x):
             feats = self.backbone(x)
@@ -231,9 +471,12 @@ def _build_detector(weight_path: str, device: str):
                 rest = pred_sig[..., 4:]
                 boxes = torch.cat([xy, wh, rest], dim=-1).view(bs, -1, 5 + self.nc)
                 all_preds.append(boxes)
-            return torch.cat(all_preds, dim=1)
+            det = torch.cat(all_preds, dim=1)
+            # Run text_seg decoder on backbone features (indices 1,3,5,7,9)
+            seg_mask = self.seg_head(feats) if self.seg_head is not None else None
+            return det, seg_mask
 
-    model = _DetectorModel(backbone, det_convs, anchors, strides, nc)
+    model = _DetectorModel(backbone, det_convs, anchors, strides, nc, seg_head)
     model.to(device).eval()
     logger.info("comic-text-detector (blk_det YOLOv5) loaded on %s", device)
     return model, True
@@ -274,12 +517,18 @@ class BubbleDetector:
         def _infer_sync():
             tensor = self._preprocess(image).to(self.device)
             with torch.no_grad():
-                preds = self._model(tensor)  # (1, N, 5+nc)
-            return preds
+                det, seg_mask = self._model(tensor)  # det: (1, N, 5+nc), seg_mask: (1,1,H,W)|None
+            return det, seg_mask
 
-        preds = await asyncio.to_thread(_infer_sync)
+        raw_det, seg_mask = await asyncio.to_thread(_infer_sync)
 
-        preds = preds[0]  # first (only) batch item
+        # ── Build full-resolution segmentation map ────────────────────────
+        seg_full: np.ndarray | None = None
+        if seg_mask is not None:
+            seg_np = seg_mask[0, 0].cpu().float().numpy()  # (1024, 1024) float in [0,1]
+            seg_full = cv2.resize(seg_np, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+
+        preds = raw_det[0]  # first (only) batch item
         obj_conf = preds[:, 4]
         mask = obj_conf > _CONF_THRESH
         preds = preds[mask]
@@ -306,6 +555,10 @@ class BubbleDetector:
         # overlapping boxes (e.g., a tall vertical bubble split into two).
         boxes, scores, cls_ids = _merge_overlapping_boxes(boxes, scores, cls_ids, _MERGE_IOU)
 
+        # Proximity merge: combine fragments that don't overlap but are
+        # within _PROXIMITY_GAP px of each other and share an axis span.
+        boxes, scores, cls_ids = _merge_proximity_boxes(boxes, scores, cls_ids, _PROXIMITY_GAP)
+
         sx, sy = orig_w / _MODEL_INPUT_SIZE, orig_h / _MODEL_INPUT_SIZE
         bubbles: list[BubbleInfo] = []
         for i, (box, score, cid) in enumerate(zip(boxes, scores, cls_ids)):
@@ -316,20 +569,35 @@ class BubbleDetector:
             bw, bh = bx2 - bx1, by2 - by1
             if bw * bh < _MIN_AREA:
                 continue
-            mask_img = np.zeros((orig_h, orig_w), dtype=np.uint8)
-            mask_img[by1:by2, bx1:bx2] = 255
             text_dir = "vertical" if bh > bw * 1.2 else "horizontal"
             bubble_type = "text" if cid == 0 else ("effect" if cid == 2 else "speech")
+
+            # ── Build per-bubble mask ────────────────────────────────────
+            if seg_full is not None:
+                # Use text_seg segmentation for accurate bubble interior mask
+                roi = seg_full[by1:by2, bx1:bx2]
+                mask_roi = (roi >= _SEG_THRESHOLD).astype(np.uint8) * 255
+                # If seg is empty inside bbox fall back to solid fill
+                if mask_roi.any():
+                    full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                    full_mask[by1:by2, bx1:bx2] = mask_roi
+                else:
+                    full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                    full_mask[by1:by2, bx1:bx2] = 255
+            else:
+                full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                full_mask[by1:by2, bx1:bx2] = 255
+
             bubbles.append(
                 BubbleInfo(
                     id=i + 1,
                     bbox=(bx1, by1, bw, bh),
-                    mask=mask_img,
+                    mask=full_mask,
                     text_direction=text_dir,
                     bubble_type=bubble_type,
                 )
             )
-        logger.info("Detected %d text regions (model)", len(bubbles))
+        logger.info("Detected %d text regions (model, seg=%s)", len(bubbles), seg_full is not None)
         return bubbles
 
     @staticmethod

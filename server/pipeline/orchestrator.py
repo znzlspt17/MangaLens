@@ -287,7 +287,7 @@ async def run_pipeline(
         if ctx.skipped:
             continue
         text = ctx.translated_text or (ctx.ocr.text if ctx.ocr else "")
-        rendered, font_size = await renderer.render(
+        rendered, font_size, adj_bbox = await renderer.render(
             erased_image,
             text,
             ctx.info.bbox,
@@ -295,7 +295,7 @@ async def run_pipeline(
         )
         ctx.font_size_used = font_size
         rendered_bubbles.append(
-            RenderedBubble(bbox=ctx.info.bbox, image=rendered)
+            RenderedBubble(bbox=adj_bbox, image=rendered)
         )
 
     # ── Stage 7: Compositing ───────────────────────────────────────────

@@ -1,6 +1,6 @@
 # MangaLens — 진행 상황 추적
 
-> 최종 갱신: 2026-03-26 (Phase 15: 렌더링 버그 수정 — 말풍선 좌측 글자 잘림)
+> 최종 갱신: 2026-03-27 (Phase 17: 노이즈 원인 분석 + 7가지 수정 완료)
 
 ---
 
@@ -95,6 +95,48 @@
 
 ---
 
+## 2026-03-27 — Phase 16: 탁음/반탁음 + 텍스트 크기 버그 수정
+
+### 버그 1: 탁음/반탁음이 후리가나로 오인식되어 지워지는 문제
+
+**원인:** `remove_furigana()`의 근접도 패딩이 `median_h × 0.15`(≈4px)로 너무 작아 실제 11-29px 떨어진 탁음 점(゛゜)이나 ellipsis(．)까지 삭제됨. 또한 후리가나는 별도 서브컬럼에 위치하므로 column-overlap 기준이 없었음.
+
+**수정:**
+| # | 파일 | 수정 내용 |
+|---|------|-----------|
+| 1 | `server/pipeline/preprocessor.py` | `pad = max(median_h * 0.15, 3.0)` → `max(median_h * 0.30, 3.0)` (패딩 2× 증가) |
+| 2 | `server/pipeline/preprocessor.py` | column-overlap 체크 추가: 소형 component의 x범위가 대형 component 중 하나와 겹치면 보존 (`if sx1 < lx2 and sx2 > lx1: near_large = True`) |
+
+**검증:** P22 ID3 기준 잘못 삭제된 픽셀 612 → 0
+
+---
+
+### 버그 2: 번역 텍스트가 너무 크거나 말풍선 밖으로 넘치는 문제
+
+**원인:** 수직 말풍선(세로쓰기 원본)에서 `fit_h = max(bw, _MIN_FONT_SIZE * 3)` — 좁은 bw=24px 말풍선에서 `fit_h=36, usable_h=24` → 폰트 바이너리 탐색이 항상 최소값(12px) 반환. 또한 `actual_render_h = needed_h`에 상한이 없어 bh 초과 가능.
+
+**수정:**
+| # | 파일 | 수정 내용 |
+|---|------|-----------|
+| 1 | `server/pipeline/text_renderer.py` | `fit_h = max(bw, _MIN_FONT_SIZE * 3)` → `fit_h = bh` (전체 말풍선 높이 사용) |
+| 2 | `server/pipeline/text_renderer.py` | `actual_render_h = needed_h` → `actual_render_h = min(needed_h, bh)` (bh 초과 방지) |
+
+**검증:** 폰트 크기 12px → 25px 이상으로 정상화, 세로 오버플로우 제거
+
+---
+
+### Phase 16 최종 결과
+
+| 항목 | 수치 |
+|------|------|
+| 전체 테스트 페이지 | 33/33 성공 |
+| 총 번역 버블 | 282개 |
+| 미번역 버블 | 0개 (0%) |
+| 평균 OCR 신뢰도 | 0.935 |
+| pytest 통과 수 | 126/126 ✅ |
+
+---
+
 ## 알려진 이슈 (PM 검토 결과)
 
 ### P0 — 모두 해결됨 ✅
@@ -124,9 +166,10 @@
 
 | 이슈 | 심각도 | 내용 |
 |------|--------|------|
-| HF_TOKEN 미설정 경고 | 낙음 | HuggingFace rate limit 경고. 기능에는 영향 없음 |
-| basicsr `.venv` 패치 | 낙음 | `uv sync` 재실행 시 재패치 필요 (자동화 미구현) |
-| Hunyuan 첫 요청 지연 | 낙음 | 마지막 비활성 시 ~5내가 VRAM 로드. lifespan warm-up으로 개선 가능 (D-014 후속고려) |
+| HF_TOKEN 미설정 경고 | 낮음 | HuggingFace rate limit 경고. 기능에는 영향 없음 |
+| basicsr `.venv` 패치 | 낮음 | `uv sync` 재실행 시 재패치 필요 (자동화 미구현) |
+| Hunyuan 첫 요청 지연 | 낮음 | 마지막 비활성 시 ~5초 VRAM 로드. lifespan warm-up으로 개선 가능 (D-014 후속고려) |
+| 효과음 검출 불가 | 낮음 | `effects_skipped = 0` — 효과음(effect 타입) 말풍선이 감지되지 않음 |
 
 ---
 
@@ -149,10 +192,38 @@
 | Phase 12: 전체 코드 리뷰 (5개 담당 검토) | ✅ 검토 완료 |
 | Phase 13: 전체 이슈 수정 (26건 P0-P2) | ✅ 181 tests passed |
 | Phase 14: 로깅 시스템 + 런타임 버그 수정 | ✅ 181 tests passed |
+| Phase 15: 렌더링 말풍선 좌측 글자 잘림 수정 | ✅ |
+| Phase 16: 탁음/반탁음 오삭제 + 텍스트 크기 과대/과소 수정 | ✅ 126 tests passed, 33/33 pages |
+| Phase 17: 노이즈 근본 원인 7건 수정 (N1~N7) | ✅ 187 tests passed |
 
 ---
 
-## 2026-03-26 — Phase 14: 로깅 시스템 + 런타임 버그 수정
+## 2026-03-27 — Phase 17: 노이즈 근본 원인 분석 + 수정
+
+### 분석 데이터
+- `output/phase19_final/` — 33페이지, 총 273개 말풍선 전수 분석
+- 미번역 8건(3%), 폰트 12px 강제 67건(25%), 세로 버블 전체가 24px 캡에 묶힘
+
+### 수정 목록 (7건)
+
+| # | 코드 | 파일 | 변경 전 | 변경 후 |
+|---|------|------|---------|---------|
+| N1 | `_PROXIMITY_GAP` | `bubble_detector.py` | 10 | 25 (세로쓰기 컬럼 합치기 개선) |
+| N2 | scale-down 제거 | `text_renderer.py` | `font_size × 0.85` (60px 초과 시) | 제거 — `_find_best_font_size`에 위임 |
+| N3 | `_MAX_VERT_FONT_SIZE` | `text_renderer.py` | 24 | 36 (세로→가로 변환 캡 완화) |
+| N4 | 가나 감지 | `translator.py` | fallback = 원문 반환 | `_JA_KANA_RE` — 가나 포함 시 `""` 반환 |
+| N5 | 간결성 지시 | `translator.py` | 6개 규칙 | 7번째 규칙 "원문과 유사한 분량 유지" 추가 |
+| N6 | inpainting dilate | `text_eraser.py` | `(9,9)` kernel + iterations=3 | `(7,7)` kernel + iterations=2 |
+| N7 | 자동 글자색 | `text_renderer.py` | 항상 검정 | bbox 평균 밝기 < 128 → 흰 글씨 / 검정 윤곽 |
+
+### Phase 17 최종 결과
+
+| 항목 | 수치 |
+|------|------|
+| pytest 통과 수 | **187/187** ✅ |
+| 수정 파일 수 | 4 (`bubble_detector.py`, `text_renderer.py`, `text_eraser.py`, `translator.py`) |
+
+
 
 ### 배경
 번역 실행 시 "번역 실패" 발생. 로그가 부족하여 원인 파악 불가 → 프론트엔드+백엔드 전면 로깅 구축 후 런타임 버그 2건 발견·수정.

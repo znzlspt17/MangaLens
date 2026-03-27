@@ -93,8 +93,8 @@ class TextEraser:
 
         # Dilate the mask to ensure all text ink (including anti-aliased
         # edges and strokes that bleed past the bbox boundary) is covered.
-        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-        mask = cv2.dilate(mask, dilate_kernel, iterations=3)
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        mask = cv2.dilate(mask, dilate_kernel, iterations=2)
 
         if self._model_loaded:
             return await asyncio.to_thread(self._inpaint_lama, image, mask)

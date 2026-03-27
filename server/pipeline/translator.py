@@ -46,7 +46,8 @@ _SYSTEM_MSG_TEMPLATE = (
     "コンビニ→편의점. Do NOT guess — use the correct meaning.\n"
     "4. Transliterate proper nouns using standard conventions: キアヌ→키아누, ジョン→존.\n"
     "5. Translate onomatopoeia/mimetic words into natural {tgt} equivalents.\n"
-    "6. Output ONLY the {tgt} translation — no explanations, no notes, no original text."
+    "6. Keep translations concise \u2014 match the original\u2019s length as closely as possible.\n"
+    "7. Output ONLY the {tgt} translation \u2014 no explanations, no notes, no original text."
 )
 
 # A-1: Context-window batch prompt — instructs model to translate all lines together
@@ -60,8 +61,9 @@ _BATCH_SYSTEM_MSG_TEMPLATE = (
     "2. Handle dialects: Kansai-ben (〜やん, 〜とんねん), Tohoku-ben, etc.\n"
     "3. Translate cultural terms accurately: 家系ラーメン→이에케이 라면, 割りばし→나무젓가락.\n"
     "4. Transliterate proper nouns consistently: キアヌ→키아누, ジョン→존.\n"
-    "5. Output ONLY the translations, one per line, numbered <1> to <N> matching the input.\n"
-    "6. No explanations, no notes, no original text."
+    "5. Keep each translation concise — match the original line's length as closely as possible.\n"
+    "6. Output ONLY the translations, one per line, numbered <1> to <N> matching the input.\n"
+    "7. No explanations, no notes, no original text."
 )
 _PROMPT_TEMPLATE = (
     "Translate the following {src} manga dialogue into {tgt}. "
@@ -213,6 +215,10 @@ def _dynamic_max_new_tokens(src_token_len: int) -> int:
 _NOISE_PREFIXES = (". ", "* ", "- ", "**", "# ")
 _NOTE_MARKERS = ("**note:", "(note:", "[note:", "※", "translation note", "참고:")
 
+# N4: Hiragana + Katakana range — never appears in correct KO output.
+# If detected in result, the translation failed (returned Japanese).
+_JA_KANA_RE = re.compile(r"[\u3040-\u30FF]")
+
 
 def _postprocess(raw: str, src_text: str) -> str:
     """Remove common LLM noise artefacts from a translated string.
@@ -252,6 +258,14 @@ def _postprocess(raw: str, src_text: str) -> str:
                 break
         else:
             text = text[:hard_limit].rstrip() + "…"
+
+    # 4. N4: If result still contains Japanese kana, translation failed — return empty
+    #    so the bubble is left blank rather than showing the original Japanese.
+    if _JA_KANA_RE.search(text):
+        logger.warning(
+            "[postprocess] Japanese kana detected in output — discarding: %s…", text[:40]
+        )
+        return ""
 
     return text.strip()
 

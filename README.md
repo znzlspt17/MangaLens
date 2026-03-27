@@ -6,7 +6,7 @@
 
 ## 개발 기간
 
-2026년 3월 24일 ~ 25일 (2일)
+2026년 3월 24일 ~ 현재 (진행 중)
 
 ---
 
@@ -56,12 +56,12 @@
 | 단계 | 모델 | 아키텍처 | 크기 | 역할 |
 |------|------|---------|------|------|
 | ① 말풍선 검출 | **comic-text-detector** | YOLOv5s | ~12MB | 말풍선/나레이션 bbox + 텍스트 마스크 + 방향 판별 |
-| ② 이미지 업스케일 | **Real-ESRGAN** | RRDBNet (ESRGAN) | ~64MB | 저해상도 크롭 업스케일 (OCR 정확도 향상) |
+| ② 이미지 업스케일 | **Real-ESRGAN** | RRDBNet (ESRGAN) | ~17~64MB | 저해상도 크롭 업스케일 (OCR 정확도 향상) — `anime_6B` 기본 |
 | ③ OCR | **manga-ocr** | TrOCR (ViT + GPT Decoder) | ~450MB | 일본어 세로쓰기 텍스트 인식 |
 | ⑤ 텍스트 제거 | **LaMa** | FFC + ResNet | ~200MB | 말풍선 내 텍스트 인페인팅 (배경 복원) |
 | ④ 번역 | **Hunyuan-MT-7B** | CausalLM (7B파라미터) | ~14GB VRAM | JA → KO 로컬 인퍼런스 (WMT25 1위) |
 
-> 4개 로컬 모델 합계 약 **726MB** VRAM + Hunyuan-MT-7B ~14GB VRAM. 첫 요청 시 1회 로드 후 글로뱌 캐시에 유지됩니다.
+> 4개 로컬 모델 합계 약 **726MB** VRAM + Hunyuan-MT-7B ~14GB VRAM. 첫 요청 시 1회 로드 후 글로벌 캐시에 유지됩니다.
 
 ---
 
@@ -82,6 +82,8 @@
 
 **해결**: Real-ESRGAN으로 크롭 이미지를 x2/x4 업스케일 후 OCR에 전달.
 - 작은 크롭은 x4, 큰 크롭은 x2 자동 판별
+- **x4 기본 변형**: `anime_6B` (만화/애니 특화 6블록 경량 모델) — `UPSCALER_VARIANT` 환경변수로 `x4plus` 전환 가능
+- 업스케일 직후 **후리가나 제거** (connected component 높이 필터링 + 탁음/반탁음 열 보존) — OCR 정확도 향상
 - **업스케일은 OCR 전처리 전용** — 최종 출력은 원본 해상도 유지
 
 ### ③ OCR: manga-ocr (TrOCR)
@@ -214,7 +216,7 @@ frontend/                # Vanilla HTML+CSS+JS SPA
 ├── js/app.js, api.js, upload.js, progress.js, result.js, settings.js
 └── assets/icons/
 
-tests/                   # pytest 테스트 (159+ 케이스)
+tests/                   # pytest 테스트 (187 케이스)
 ```
 
 ## 환경 변수
@@ -228,6 +230,7 @@ tests/                   # pytest 테스트 (159+ 케이스)
 | `SKIP_WARMUP` | `false` | 모델 워밍업 건너뛰기 |
 | `ALLOWED_ORIGINS` | (비어 있음) | CORS 허용 출처 |
 | `USE_MAGI_DETECTOR` | `false` | Magi v2 감지기 활성화 |
+| `UPSCALER_VARIANT` | `anime_6b` | 업스케일러 변형 선택 (`anime_6b` / `x4plus`) |
 
 ## 라이선스
 

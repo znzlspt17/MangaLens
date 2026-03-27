@@ -66,9 +66,10 @@ def remove_furigana(image: np.ndarray) -> np.ndarray:
             large_rects.append((lx, ly, lx + lw, ly + lh))
 
     # Proximity padding — dakuten marks sit within a few pixels of the
-    # parent character body.  15 % of the median glyph height (min 3 px)
-    # is enough to catch them without reaching into a furigana sub-column.
-    pad = max(median_h * 0.15, 3.0)
+    # parent character body.  30 % of the median glyph height (min 3 px)
+    # is enough to catch diacritical marks that appear at the corner of
+    # a character but are not furigana.
+    pad = max(median_h * 0.30, 3.0)
 
     result = image.copy()
     for label_idx in range(1, n_labels):
@@ -85,11 +86,20 @@ def remove_furigana(image: np.ndarray) -> np.ndarray:
         sy2 = sy1 + int(h)
 
         # If this small component overlaps (with padding) any main glyph,
-        # it is likely a dakuten/handakuten mark — preserve it.
+        # OR shares the same horizontal column (x-range overlap) as any
+        # main glyph, it is likely a dakuten/handakuten mark or in-column
+        # punctuation (e.g. Japanese ellipsis ．) — preserve it.
+        # Furigana always appears in a SEPARATE sub-column whose x-range
+        # does NOT overlap with the main text column.
         near_large = False
         for (lx1, ly1, lx2, ly2) in large_rects:
+            # Standard proximity check
             if (sx1 - pad < lx2 and sx2 + pad > lx1 and
                     sy1 - pad < ly2 and sy2 + pad > ly1):
+                near_large = True
+                break
+            # Column-overlap check: same horizontal zone → same text column
+            if sx1 < lx2 and sx2 > lx1:
                 near_large = True
                 break
 
@@ -194,7 +204,7 @@ class Preprocessor:
             )
             self._upsampler_x2 = RealESRGANer(
                 scale=2, model_path=str(x2_path), model=net_x2,
-                half=False, device=device,
+                half=False, device=device, pre_pad=0,
             )
 
             net_x4 = RRDBNet(
@@ -203,7 +213,7 @@ class Preprocessor:
             )
             self._upsampler_x4 = RealESRGANer(
                 scale=4, model_path=str(x4_path), model=net_x4,
-                half=False, device=device,
+                half=False, device=device, pre_pad=0,
             )
 
             self._model_loaded = True
@@ -249,22 +259,54 @@ class Preprocessor:
         crop_h, crop_w = crop.shape[:2]
         scale = 4 if crop_w < min_size or crop_h < min_size else 2
 
-        # Real-ESRGAN uses pre_pad=10 with reflect mode — input dims must
-        # exceed the pad size, otherwise fall back to cv2.resize.
-        _MIN_ESRGAN_DIM = 12
+        # ESRGAN hallucination threshold — very narrow crops (typical of
+        # single/double kanji columns, w < 40 px) cause severe convolutional
+        # artefacts that make text unreadable.  Bicubic is measurably cleaner
+        # for these strips (confirmed visually on page-2 narrow vertical
+        # speech bubbles).  ESRGAN is still used for wider, more "square"
+        # crops where texture enhancement genuinely helps OCR quality.
+        _MIN_ESRGAN_DIM = 8
+        _MIN_ESRGAN_SIDE = 40
 
-        if self._model_loaded and crop_h >= _MIN_ESRGAN_DIM and crop_w >= _MIN_ESRGAN_DIM:
+        use_esrgan = (
+            self._model_loaded
+            and crop_h >= _MIN_ESRGAN_DIM
+            and crop_w >= _MIN_ESRGAN_DIM
+            and crop_w >= _MIN_ESRGAN_SIDE
+            and crop_h >= _MIN_ESRGAN_SIDE
+        )
+
+        if use_esrgan:
             import torch
             upsampler = self._upsampler_x4 if scale == 4 else self._upsampler_x2
 
+            # Pad with white (manga background) before ESRGAN so the model
+            # has neutral context at the edges.  With pre_pad=0 (set on the
+            # upsampler) the only boundary the network sees is this white
+            # region, eliminating mirror-reflection artefacts.
+            _NEUTRAL_PAD = 10
+            padded = cv2.copyMakeBorder(
+                crop,
+                _NEUTRAL_PAD, _NEUTRAL_PAD, _NEUTRAL_PAD, _NEUTRAL_PAD,
+                cv2.BORDER_CONSTANT, value=(255, 255, 255),
+            )
+
             def _upscale_sync():
                 with torch.no_grad():
-                    out, _ = upsampler.enhance(crop, outscale=scale)
+                    out, _ = upsampler.enhance(padded, outscale=scale)
                 return out
 
-            output = await asyncio.to_thread(_upscale_sync)
+            output_padded = await asyncio.to_thread(_upscale_sync)
+            # Trim the upscaled white border from all four sides.
+            p = _NEUTRAL_PAD * scale
+            ph, pw = output_padded.shape[:2]
+            output = output_padded[
+                p : max(ph - p, p + 1),
+                p : max(pw - p, p + 1),
+            ]
             return remove_furigana(output)
 
+        # Narrow / tiny crops: bicubic is cleaner than ESRGAN for these.
         upscaled = cv2.resize(
             crop, None, fx=scale, fy=scale,
             interpolation=cv2.INTER_CUBIC,

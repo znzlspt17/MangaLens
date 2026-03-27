@@ -1,6 +1,6 @@
 # MangaLens — 기술 결정 기록 (DECISIONS.md)
 
-> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-26 (D-022)
+> 주요 기술 선택의 근거를 기록한 문서. 최종 갱신: 2026-03-27 (D-031)
 
 ---
 
@@ -110,12 +110,13 @@
 
 ---
 
-## D-012: 후리가나 제거 — 탁점/반탁점 보호 로직 추가
+## D-012: 후리가나 제거 — 탁점/반탁점 보호 로직 추가 (Phase 9 초기, Phase 16 강화)
 
-- **결정**: `remove_furigana()` 에서 작은 connected component가 큰 글리프 bbox에 근접하면 삭제하지 않음 (탁점/반탁점 보존)
-- **근거**: 탁점(゛)과 반탁점(゜)은 이진화 후 문자 본체와 별도 connected component로 분리되나, 문자 본체 바로 옆에 위치. 탁점 없이 OCR할 경우 `が→か`, `ぱ→は` 등 의미가 완전히 달라져 번역 품질 심각하게 저하
-- **구현**: 작은 컴포넌트 bbox와 모든 큰 글리프 bbox 간 근접도 검사 — padding = `max(median_h * 0.15, 3px)`. 근접하면 보존, 멀면 후리가나로 제거
-- **관련 결정**: D-009 (후리가나 제거 최초 구현) 보완
+- **결정**: `remove_furigana()` 에서 작은 connected component가 큰 글리프 bbox에 근접하거나 **같은 텍스트 컬럼**에 있으면 삭제하지 않음 (탁점/반탁점 보존)
+- **근거**: 탁점(゛)과 반탁점(゜)은 이진화 후 문자 본체와 별도 connected component로 분리되나, 문자 본체 바로 옆에 위치. 탁점 없이 OCR할 경우 `が→か`, `ぱ→は` 등 의미가 완전히 달라져 번역 품질 심각하게 저하. 또한 세로쓰기 말풍선에서 ellipsis(．)와 구두점도 별도 컴포넌트로 분리됨
+- **Phase 9 구현**: padding = `max(median_h * 0.15, 3px)`. 근접하면 보존, 멀면 후리가나로 제거
+- **Phase 16 강화 → D-023**: 실제 탁음 점이 11-29px 거리였는데 패딩 4px로 커버 안 됨 → 별도 결정 D-023으로 보완
+- **관련 결정**: D-009 (후리가나 제거 최초 구현), D-023 (패딩 강화 + column check)
 
 ---
 
@@ -212,3 +213,89 @@
 - **근거**: transformers 5.3.0에서 `apply_chat_template`이 `return_tensors="pt"` 옵션 사용 시 bare tensor가 아닌 `BatchEncoding`(dict-like 객체)을 반환하도록 변경됨. 기존 코드는 `result.shape[1]`을 직접 호출하여 `AttributeError` 발생
 - **구현**: `BatchEncoding`이면 `result["input_ids"]` 추출, bare tensor면 그대로 사용. 두 버전 모두 호환
 - **교훈**: transformers 메이저 업데이트 시 반환 타입 변경에 주의. 테스트에서 mock 사용으로 해당 경로가 커버되지 않았음
+
+---
+
+## D-023: 후리가나 제거 — 탁음/반탁음 보호 패딩 강화 + column-overlap 체크 (Phase 16)
+
+- **결정**: `remove_furigana()` 보호 패딩을 `median_h × 0.15` → `× 0.30`으로 2배 증가, 추가로 소형 component의 x범위가 대형 component의 x범위와 겹치면 같은 텍스트 컬럼으로 보고 무조건 보존
+- **근거**: 실제 측정 결과 탁점(゛)이 주변 글자에서 11–29px 떨어져 있었으나 `pad ≈ 4px` (median_h=27.5)라 detection 불가. 또한 후리가나는 주 텍스트와 x범위가 겹치지 않는 별도 서브컬럼 위치 → column-overlap 기준으로 구분 가능
+- **구현**:
+  - `pad = max(median_h * 0.30, 3.0)` — 기존 0.15 → 0.30
+  - 근접도 루프에 column-overlap 체크 추가: `if sx1 < lx2 and sx2 > lx1: near_large = True`
+- **검증**: P22 ID3 기준 잘못 삭제된 픽셀 612 → 0
+- **관련 결정**: D-009, D-012
+
+---
+
+## D-024: 텍스트 렌더러 — 수직 말풍선 폰트 크기 수정 (fit_h = bh)
+
+- **결정**: 수직 원본(세로쓰기) 말풍선 렌더링 시 `fit_h = max(bw, _MIN_FONT_SIZE * 3)` → `fit_h = bh`로 변경, `actual_render_h = needed_h` → `min(needed_h, bh)` 상한 추가
+- **근거**: 세로쓰기 말풍선은 bw(너비)가 좁고(예: 24px) bh(높이)가 긴 형태. 기존 코드는 bw 기반으로 `fit_h=36, usable_h=24`를 계산해 font binary search에서 항상 최솟값(12px)을 반환. 실제로 렌더링 공간은 bh만큼 넓게 존재하므로 bh를 상한으로 써야 함. `actual_render_h` 상한이 없으면 가늘고 긴 오버레이가 말풍선 밖으로 삐져나갈 수 있음
+- **수정 위치**: `server/pipeline/text_renderer.py::TextRenderer.render()`, 수직 소스 분기(`if is_vert_src:`) 내부
+- **검증**: P22 기준 폰트 12px(최솟값 고정) → 25px+(말풍선 크기 비례), 세로 오버플로우 제거
+- **관련 결정**: D-003 (Pillow 렌더링), D-022 (스트로크 인식 줄바꿈)
+
+---
+
+## D-025: 텍스트 렌더러 — 초좁은 수직 말풍선 캔버스 폭 상한 (_vert_cap)
+
+- **결정**: 수직 원본 말풍선 렌더링 시 `render_w = bh` / `fit_h = bh` → `_vert_cap = max(bw*4, _MIN_FONT_SIZE*6)`을 상한으로 `render_w = min(bh, _vert_cap)`, `fit_h = min(bh, _vert_cap)`로 변경
+- **근거**: D-024(Phase 16)에서 `fit_h = bh`로 넓혔더니 초좁은 세로 말풍선(bw=8~20, bh=80~140, 비율 bh/bw ≥ 4)에서 두 가지 버그 발생:
+  1. **폰트 과대**: `fit_h=bh` → binary search `hi=bh-padding=~90` → font 21~29px (정상 말풍선에 비해 3배+)
+  2. **캔버스 오버플로우**: `render_w=bh=102` 캔버스가 말풍선(bw=11) 중심에서 ±46px 밖으로 확장 → LaMa가 지운 영역 외부 manga art 위에 텍스트 렌더링
+- **공식**: `_vert_cap = max(bw * 4, _MIN_FONT_SIZE * 6) = max(bw*4, 72)`. `bw*4≥bh`인 "충분히 넓은" 말풍선은 cap이 bh 이상 → Phase 16 동작 그대로 보존. `bw*4<bh`인 초좁은 말풍선만 제한
+- **수정 위치**: `server/pipeline/text_renderer.py::TextRenderer.render()`, 수직 분기(`if is_vert_src:`) 내부 3줄
+- **검증**: 33/33 페이지 OK, 282 버블. 영향 페이지(P1/P3/P16) 시각 확인 — 텍스트가 말풍선 내부에 적절한 크기로 배치됨. pytest 64/64 통과
+- **관련 결정**: D-024 (Phase 16 fit_h=bh), D-003 (Pillow 렌더링)
+
+---
+
+## D-026: 말풍선 근접 병합 갭 확대 (_PROXIMITY_GAP 10→25) — Phase 17 N1
+
+- **결정**: `_PROXIMITY_GAP = 10` → `25` (세로쓰기 텍스트 컬럼 병합 갭)
+- **근거**: phase19_final 분석에서 세로쓰기 말풍선의 각 문자 컬럼이 너무 좁은 개별 bbox(w=15~27px)로 잡혀 30건(11%)의 초협소 말풍선 생성. 갭 10px은 컬럼 간 간격(약 12~20px)보다 작아 병합 실패. 25px로 확대하면 세로쓰기 컬럼들이 정상 병합됨.
+- **리스크**: 근접하지만 실제로 분리된 별개 말풍선을 잘못 합칠 가능성 → phase19_final 33페이지에서 검증 후 허용 범위로 판단
+- **파일**: `server/pipeline/bubble_detector.py`
+
+---
+
+## D-027: scale-down 제거 (font_size×0.85 폐기) — Phase 17 N2
+
+- **결정**: `if render_w > 60 and bh > 60: font_size = max(int(font_size * 0.85), _MIN_FONT_SIZE)` 블록 전면 제거
+- **근거**: `_find_best_font_size()`가 이미 bbox에 맞는 최대 폰트를 binary search로 찾음. 추가 0.85 scale-down은 horizontal 버블 82%를 fs=12~13으로 강제 수축 — 가독성 저하의 주요 원인. scale-down 없이도 줄바꿈 + 세로 overflow 축소 루프가 안전 보장을 제공함.
+- **B-3 주석 제거**: 기존 "B-3: Adaptive scale-down" 주석도 함께 제거
+- **파일**: `server/pipeline/text_renderer.py`
+
+---
+
+## D-028: _MAX_VERT_FONT_SIZE 캡 완화 (24→36) — Phase 17 N3
+
+- **결정**: `_MAX_VERT_FONT_SIZE = 24` → `36`
+- **근거**: 세로→가로 변환 말풍선 전체(229건)가 최대 24px에 묶여 가독성 저하. 24px는 원래 "artwork 아래에 텍스트가 덮이는 것 방지" 목적이었으나 결과적으로 과도하게 작음. 36px로 완화하면 정상 크기의 말풍선에서 18~28px 폰트가 가능해지면서 artwork 침범은 `_vert_cap` 기반 overlay 크기 제한이 별도로 방어.
+- **파일**: `server/pipeline/text_renderer.py`
+
+---
+
+## D-029: 번역 실패 감지 — 일본어 가나 정규식 (_JA_KANA_RE) — Phase 17 N4
+
+- **결정**: `_postprocess()` 마지막에 히라가나/가타카나 감지(`[\u3040-\u30FF]`) → 발견 시 `""` 반환
+- **근거**: 배치 번역 실패 + 개별 fallback도 원문 반환하는 8건에서 일본어 가나가 그대로 번역 결과에 포함됨. 한국어에는 가나가 절대 포함되지 않으므로, 가나 존재 = 번역 실패의 신뢰도 높은 신호. `""` 반환 → `render()` 조기 종료 → 말풍선 blank → 원문 일본어 노출보다 나은 사용자 경험.
+- **파일**: `server/pipeline/translator.py`
+
+---
+
+## D-030: 번역 간결성 규칙 추가 (규칙 #6/#7) — Phase 17 N5
+
+- **결정**: `_SYSTEM_MSG_TEMPLATE` 및 `_BATCH_SYSTEM_MSG_TEMPLATE` 양쪽에 "원문과 유사한 분량으로 번역 유지" 규칙 추가
+- **근거**: JA→KO 번역 팽창 평균 1.5x, 최대 10x — 말풍선 내 텍스트 넘침의 주요 원인. 기존 6배 hallucination guard는 너무 관대. 명시적 간결성 지시로 모델 출력 길이를 1.0~1.5x로 유도.
+- **파일**: `server/pipeline/translator.py`
+
+---
+
+## D-031: inpainting 마스크 dilate 축소 (9×9 iter=3 → 7×7 iter=2) — Phase 17 N6
+
+- **결정**: `cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9,9))` + `iterations=3` → `(7,7)` + `iterations=2`
+- **근거**: 실효 팽창 반경: 기존 (9×9 iter=3) ≈ 13.5px, 변경 후 (7×7 iter=2) ≈ 7px. 좁은 말풍선(bw=15~30px)에서 마스크가 13px 확장되면 말풍선 경계를 벗어나 주변 artwork까지 inpainting → 아티팩트 발생. 7px로 축소하면 텍스트 anti-aliased edge+stroke 커버에 충분하면서 경계 침범 최소화.
+- **파일**: `server/pipeline/text_eraser.py`
+

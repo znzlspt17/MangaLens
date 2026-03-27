@@ -77,7 +77,7 @@ class Compositor:
             alpha = overlay_region[:, :, 3].astype(np.float32) / 255.0
 
             # Feathering: Gaussian blur on alpha for smooth edges
-            alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1, sigmaY=1)
+            alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=2, sigmaY=2)
 
             alpha_3ch = alpha[:, :, np.newaxis]
             # Overlay is RGBA (RGB order from Pillow), original is BGR (OpenCV).

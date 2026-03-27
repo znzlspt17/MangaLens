@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _PADDING = 6
 _MIN_FONT_SIZE = 12
+_MAX_VERT_FONT_SIZE = 36  # Cap font for vertical→horizontal to prevent artwork overlay
 _TEXT_COLOR = (0, 0, 0)
 _STROKE_COLOR = (255, 255, 255)
 _FONT_WEIGHT = 700  # Bold weight for variable fonts
@@ -101,7 +102,7 @@ class TextRenderer:
         text: str,
         bbox: tuple[int, int, int, int],
         text_direction: str = "horizontal",
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[np.ndarray, int, tuple[int, int, int, int]]:
         """Render translated text onto the bubble image.
 
         Args:
@@ -111,46 +112,102 @@ class TextRenderer:
             text_direction: ``"vertical"`` or ``"horizontal"``.
 
         Returns:
-            Tuple of (RGBA numpy array (H, W, 4) with rendered text, font_size used).
+            Tuple of (RGBA numpy array (H, W, 4) with rendered text,
+                      font_size used,
+                      adjusted_bbox (x, y, w, h) — may differ from input bbox
+                      when a vertical source bubble is rendered horizontally,
+                      because the dimensions are swapped and the overlay is
+                      re-centred on the original bbox centre).
         """
         if not text or not text.strip():
             h, w = bubble_image.shape[:2]
-            return np.zeros((h, w, 4), dtype=np.uint8), 0
+            return np.zeros((h, w, 4), dtype=np.uint8), 0, bbox
 
-        _, _, bw, bh = bbox
-        usable_w = max(bw - _PADDING * 2, 1)
-        usable_h = max(bh - _PADDING * 2, 1)
+        bx, by, bw, bh = bbox
+
+        # N7: Auto text color — white text on dark backgrounds, black on light.
+        _h_img, _w_img = bubble_image.shape[:2]
+        _x1 = max(0, bx)
+        _y1 = max(0, by)
+        _x2 = min(_w_img, bx + bw)
+        _y2 = min(_h_img, by + bh)
+        if _x2 > _x1 and _y2 > _y1:
+            _region = bubble_image[_y1:_y2, _x1:_x2].astype(np.float32)
+            # Luminance from BGR channels (OpenCV BGR order)
+            _brightness = float(
+                0.114 * _region[:, :, 0].mean()   # B
+                + 0.587 * _region[:, :, 1].mean() # G
+                + 0.299 * _region[:, :, 2].mean() # R
+            )
+        else:
+            _brightness = 255.0
+        _text_color: tuple[int, int, int] = (255, 255, 255) if _brightness < 128 else _TEXT_COLOR
+        _stroke_color: tuple[int, int, int] = (0, 0, 0) if _brightness < 128 else _STROKE_COLOR
 
         # Korean (and most translated target languages) use horizontal writing only.
         # Vertical layout is only appropriate for the source Japanese — never for
         # the rendered translation.
         use_vertical = False
 
+        # When the source text was vertical (narrow-w / tall-h bbox), rendering
+        # horizontal Korean into the original narrow width causes severe clipping.
+        # Fix: use the bbox *height* as the available rendering width, and
+        # re-centre the (now wider) overlay on the original bbox centre.
+        is_vert_src = text_direction == "vertical"
+        if is_vert_src:
+            # Japanese vertical text is detected as narrow bbox (bw=5-30).
+            # The actual speech balloon is much wider than the detected text
+            # strip.  Use _vert_cap as the render canvas width so Korean
+            # horizontal text has adequate space.  The overlay is centred on
+            # the original bbox centre, and font sizing uses the full canvas.
+            _vert_cap = max(bw * 4, 80)
+            render_w = _vert_cap
+            fit_h = max(bh, render_w)
+        else:
+            render_w = bw
+            fit_h = bh
+
+        usable_w = max(render_w - _PADDING * 2, 1)
+        usable_h = max(fit_h - _PADDING * 2, 1)
+
         font_size = self._find_best_font_size(text, usable_w, usable_h, use_vertical)
-        # B-3: Adaptive scale-down — skip for small bubbles where space is precious
-        if bw > _SMALL_BUBBLE_THRESHOLD and bh > _SMALL_BUBBLE_THRESHOLD:
-            font_size = max(int(font_size * 0.85), _MIN_FONT_SIZE)
+        # Cap font size for vertical→horizontal conversions to prevent
+        # oversized text that covers surrounding artwork.
+        if is_vert_src:
+            font_size = min(font_size, _MAX_VERT_FONT_SIZE)
         font = self._load_font(font_size)
 
         # B-3: Adaptive stroke width proportional to font size
         stroke_width = max(1, font_size // 20)
 
-        # Pre-compute lines to know actual height needed
+        # Pre-compute lines to know actual height needed.
         # Subtract stroke width from both sides so the stroke outline never
         # bleeds past the overlay edge (left/right clipping fix).
         wrap_w = max(usable_w - 2 * stroke_width, 1)
-        lines = self._wrap_text(text, font, wrap_w) if not use_vertical else None
+        lines = self._wrap_text(text, font, wrap_w)
 
         # B-4: Dynamic line height ratio
-        num_lines = len(lines) if lines else 1
+        num_lines = len(lines)
         line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
         line_height = int(font_size * line_height_ratio)
+        needed_h = num_lines * line_height + _PADDING * 2
 
-        # Narrow-bubble fix: reduce font size until text fits inside bh.
-        # Never expand the overlay beyond the actual bubble height — doing so
-        # causes text to bleed outside the speech bubble.
-        if not use_vertical and lines is not None:
-            needed_h = len(lines) * line_height + _PADDING * 2
+        if is_vert_src:
+            # For vertical→horizontal: allow overlay to extend up to fit_h
+            # (which may exceed bh for small bubbles) so text stays readable.
+            while needed_h > fit_h and font_size > _MIN_FONT_SIZE:
+                font_size -= 1
+                font = self._load_font(font_size)
+                stroke_width = max(1, font_size // 20)
+                wrap_w = max(usable_w - 2 * stroke_width, 1)
+                lines = self._wrap_text(text, font, wrap_w)
+                num_lines = len(lines)
+                line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
+                line_height = int(font_size * line_height_ratio)
+                needed_h = num_lines * line_height + _PADDING * 2
+            actual_render_h = min(needed_h, fit_h)
+        else:
+            # Narrow horizontal-bubble fix: reduce font until text fits in bh.
             while needed_h > bh and font_size > _MIN_FONT_SIZE:
                 font_size -= 1
                 font = self._load_font(font_size)
@@ -160,20 +217,26 @@ class TextRenderer:
                 num_lines = len(lines)
                 line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
                 line_height = int(font_size * line_height_ratio)
-                needed_h = len(lines) * line_height + _PADDING * 2
+                needed_h = num_lines * line_height + _PADDING * 2
+            actual_render_h = bh  # Never exceed original bubble height
 
-        actual_bh = bh  # Never exceed bubble bounds
-
-        # Create RGBA overlay — may be taller than bbox to prevent text clipping
-        overlay = Image.new("RGBA", (bw, actual_bh), (0, 0, 0, 0))
+        # Create RGBA overlay at the (possibly expanded) render dimensions.
+        overlay = Image.new("RGBA", (render_w, actual_render_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
+        self._draw_horizontal(draw, font, lines, usable_w, actual_render_h - _PADDING * 2, font_size, stroke_width, _text_color, _stroke_color)
 
-        if use_vertical:
-            self._draw_vertical(draw, font, text, usable_w, actual_bh - _PADDING * 2, font_size, stroke_width)
+        # Compute the adjusted bbox so the compositor places the overlay correctly.
+        if is_vert_src:
+            # Centre the wider overlay on the original bbox centre point.
+            cx = bx + bw // 2
+            cy = by + bh // 2
+            new_x = cx - render_w // 2
+            new_y = cy - actual_render_h // 2
+            adj_bbox: tuple[int, int, int, int] = (new_x, new_y, render_w, actual_render_h)
         else:
-            self._draw_horizontal(draw, font, lines or [""], usable_w, actual_bh - _PADDING * 2, font_size, stroke_width)
+            adj_bbox = (bx, by, render_w, actual_render_h)
 
-        return np.array(overlay, dtype=np.uint8), font_size
+        return np.array(overlay, dtype=np.uint8), font_size, adj_bbox
 
     def _draw_horizontal(
         self,
@@ -184,6 +247,8 @@ class TextRenderer:
         usable_h: int,
         font_size: int,
         stroke_width: int = 2,
+        text_color: tuple[int, int, int] = _TEXT_COLOR,
+        stroke_color: tuple[int, int, int] = _STROKE_COLOR,
     ) -> None:
         """Draw lines of text horizontally, centered in the bbox."""
         num_lines = len(lines)
@@ -201,10 +266,10 @@ class TextRenderer:
             draw.text(
                 (x, y),
                 line,
-                fill=(*_TEXT_COLOR, 255),
+                fill=(*text_color, 255),
                 font=font,
                 stroke_width=stroke_width,
-                stroke_fill=(*_STROKE_COLOR, 255),
+                stroke_fill=(*stroke_color, 255),
             )
 
     def _draw_vertical(
@@ -216,6 +281,8 @@ class TextRenderer:
         usable_h: int,
         font_size: int,
         stroke_width: int = 2,
+        text_color: tuple[int, int, int] = _TEXT_COLOR,
+        stroke_color: tuple[int, int, int] = _STROKE_COLOR,
     ) -> None:
         """Draw text vertically: columns right-to-left, 1 char per cell."""
         col_width = int(font_size * _LINE_HEIGHT_RATIO_FEW)
@@ -253,10 +320,10 @@ class TextRenderer:
                 draw.text(
                     (cx, cy),
                     ch,
-                    fill=(*_TEXT_COLOR, 255),
+                    fill=(*text_color, 255),
                     font=font,
                     stroke_width=stroke_width,
-                    stroke_fill=(*_STROKE_COLOR, 255),
+                    stroke_fill=(*stroke_color, 255),
                 )
 
     def _find_best_font_size(
