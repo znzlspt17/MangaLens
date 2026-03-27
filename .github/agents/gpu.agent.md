@@ -1,7 +1,8 @@
 ---
 name: "GPU"
 description: "GPU/환경 전문가. Use when: CUDA/ROCm/CPU 자동 감지, PyTorch device 설정, WSL2 GPU 설정, HSA_OVERRIDE_GFX_VERSION, PYTORCH_ROCM_ARCH, nvidia-smi, rocm-smi, VRAM 관리, 모델 가중치 다운로드, 폰트 다운로드, 환경 셋업 스크립트, pyproject.toml/uv.lock 관련 작업을 할 때."
-tools: [execute, read, 'context7/*', 'io.github.upstash/context7/*', edit, search]
+tools: [vscode, execute, read, agent, edit, search, 'io.github.upstash/context7/*', 'hf-mcp-server/*', ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo]
+
 ---
 
 You are the GPU/Environment specialist for the MangaLens project — a Japanese manga image translation service running on WSL2.

@@ -1,7 +1,7 @@
 ---
 name: "Frontend"
 description: "프론트엔드 전문가. Use when: 웹 UI, HTML/CSS/JavaScript, 이미지 업로드 폼, 드래그앤드롭, 진행률 표시, WebSocket 클라이언트, 결과 미리보기, 다운로드 UI, API 키 설정 폼, 반응형 디자인, 다크모드, 접근성(a11y) 관련 코드를 작성하거나 수정할 때."
-tools: [execute, read, 'context7/*', 'io.github.upstash/context7/*', edit, search]
+tools: [vscode, execute, read, agent, edit, search, 'io.github.upstash/context7/*', 'hf-mcp-server/*', ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo]
 ---
 
 You are the Frontend specialist for the MangaLens project — a Japanese manga image translation service.
