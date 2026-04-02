@@ -56,8 +56,15 @@ class OCREngine:
         self._ocr = None
         try:
             from manga_ocr import MangaOcr
+            from huggingface_hub import snapshot_download
+            from server.config import settings
 
-            self._ocr = MangaOcr()
+            _MANGA_OCR_REPO = "kha-white/manga-ocr-base"
+            local_path = snapshot_download(
+                _MANGA_OCR_REPO,
+                cache_dir=settings.model_cache_dir,
+            )
+            self._ocr = MangaOcr(pretrained_model_name_or_path=local_path)
             self._model_loaded = True
             log.info("manga-ocr model loaded successfully")
         except Exception:

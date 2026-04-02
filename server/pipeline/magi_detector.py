@@ -66,10 +66,13 @@ class MagiDetector:
             from transformers import AutoModel
 
             torch_dtype = torch.float16 if device != "cpu" else torch.float32
+            from server.config import settings
+
             model = AutoModel.from_pretrained(
                 "ragavsachdeva/magiv2",
                 trust_remote_code=True,
                 torch_dtype=torch_dtype,
+                cache_dir=settings.model_cache_dir,
             )
             if device != "cpu":
                 model = model.to(device)

@@ -516,6 +516,70 @@ class TestTranslator:
         assert result == individual_result
         await t.close()
 
+    async def test_translate_batch_retries_empty_slots_individually(self):
+        """배치 결과에 빈 슬롯('')이 있으면 해당 텍스트만 개별 재시도해야 함.
+        
+        '自明の理！' 같은 단문이 배치에서 에코백→postprocess→'' 될 때
+        개별 재시도로 올바른 번역을 받아야 함.
+        """
+        import server.pipeline.translator as trans_mod
+        from server.pipeline.translator import Translator
+        from unittest.mock import patch, call
+
+        # 배치: 두 번째 슬롯이 빈 문자열 (번역 실패)
+        batch_result = ["번역1", ""]
+        # 개별 재시도: 두 번째 텍스트만 재번역 성공
+        individual_result = ["자명한 이치！"]
+
+        mock_individual = MagicMock(return_value=individual_result)
+
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_batch_context_sync",
+                return_value=batch_result,
+            ):
+                with patch.object(
+                    trans_mod,
+                    "_translate_texts_sync",
+                    mock_individual,
+                ):
+                    t = Translator()
+                    result = await t.translate_batch(["テスト1", "自明の理！"])
+
+        # 배치 성공 슬롯은 그대로, 실패 슬롯은 개별 재시도 결과로 채워져야 함
+        assert result[0] == "번역1"
+        assert result[1] == "자명한 이치！"
+        # 개별 재시도는 빈 슬롯 텍스트만으로 호출되어야 함
+        mock_individual.assert_called_once_with(["自明の理！"], "JA", "KO")
+        await t.close()
+
+    async def test_translate_batch_empty_slot_retry_failure_keeps_empty(self):
+        """개별 재시도도 실패(예외)하면 해당 슬롯은 '' 유지."""
+        import server.pipeline.translator as trans_mod
+        from server.pipeline.translator import Translator
+        from unittest.mock import patch
+
+        batch_result = ["번역1", ""]
+
+        with patch.object(trans_mod, "_ensure_model_loaded"):
+            with patch.object(
+                trans_mod,
+                "_translate_batch_context_sync",
+                return_value=batch_result,
+            ):
+                with patch.object(
+                    trans_mod,
+                    "_translate_texts_sync",
+                    side_effect=RuntimeError("OOM"),
+                ):
+                    t = Translator()
+                    result = await t.translate_batch(["テスト1", "自明の理！"])
+
+        assert result[0] == "번역1"
+        assert result[1] == ""  # 재시도 실패 → 빈 슬롯 유지
+        await t.close()
+
 # ---------------------------------------------------------------------------
 # TestTextEraser
 # ---------------------------------------------------------------------------
@@ -610,13 +674,12 @@ class TestTextRenderer:
         assert result.shape[2] == 4
         # Overlay must contain some non-zero pixels (text was actually drawn)
         assert result.max() > 0, "Korean text must be rendered even on vertical-source bbox"
-        # Phase-19 fix: render_w = _vert_cap = max(bw*4, 80)
-        # bw=50, bh=300 → _vert_cap=max(200,80)=200 → render_w=200
-        expected_render_w = max(50 * 4, 80)  # 200
+        # render_w = bw (no expansion) = 50
+        expected_render_w = 50
         assert result.shape[1] == expected_render_w, (
             f"Overlay width {result.shape[1]} should be {expected_render_w} for vert→horiz"
         )
-        # adj_bbox width must also equal the expanded overlay width
+        # adj_bbox width must equal the overlay width
         assert adj_bbox[2] == result.shape[1]
 
     async def test_narrow_bbox_does_not_produce_empty_overlay(self, renderer):
@@ -639,10 +702,10 @@ class TestTextRenderer:
         assert result.max() > 0, (
             "Overlay is completely empty — Korean text not rendered in narrow bbox"
         )
-        # The overlay width must be _vert_cap = max(23*4, 80) = 92
-        expected_w = max(23 * 4, 80)  # 92
+        # render_w = bw (no expansion) = 23
+        expected_w = 23
         assert result.shape[1] == expected_w, (
-            f"Overlay width {result.shape[1]} should be {expected_w} for vert→horiz conversion"
+            f"Overlay width {result.shape[1]} should be {expected_w}"
         )
 
     async def test_very_narrow_bbox_width_10(self, renderer):
@@ -655,11 +718,10 @@ class TestTextRenderer:
         result, font_size, adj_bbox = await renderer.render(img, text, bbox, text_direction="vertical")
         assert result.shape[2] == 4
         assert result.max() > 0, "w=10 bbox must still produce visible Korean text"
-        # Phase-19 fix: render_w = _vert_cap = max(bw*4, 80)
-        # bw=10, bh=91 → _vert_cap=max(40,80)=80 → render_w=80
-        expected_render_w = max(10 * 4, 80)  # 80
+        # render_w = bw (no expansion) = 10
+        expected_render_w = 10
         assert result.shape[1] == expected_render_w, (
-            f"Overlay width {result.shape[1]} should be {expected_render_w} (capped) for w=10 vert→horiz"
+            f"Overlay width {result.shape[1]} should be {expected_render_w} for w=10 vert→horiz"
         )
 
     async def test_narrow_bbox_text_not_severely_truncated(self, renderer):
@@ -668,41 +730,36 @@ class TestTextRenderer:
 
         Root cause:
           usable_w = 23 - 2*PADDING = 11px
-          _wrap_text wraps to 1 char/line → 16 lines
-          line_height = MIN_FONT_SIZE * LINE_HEIGHT_RATIO = 12*1.4 ≈ 16px
-          16 lines × 16px = 256px needed, but overlay is only 82px
-          → PIL clips chars 5-16 silently, 69% of text is lost
+          _wrap_text wraps to 1 char/line → many lines
+          At min font size (12), the while-loop exits even if text overflows vertically.
 
-        After pipeline fix: overlay height must expand to fit all wrapped lines,
-        or font size must shrink until all lines fit within original bbox height.
+        After pipeline fix:
+          - Font is reduced to _MIN_FONT_SIZE (we tried our best to squeeze text in)
+          - Overlay width = bw (no horizontal expansion)
+          - Overlay height = bh (capped at balloon height; extreme narrow balloons
+            accept vertical clipping rather than overflowing outside the balloon)
+          - _wrap_text correctly char-breaks ALL overflowing words so no line is
+            silently wider than the canvas (horizontal clipping is eliminated)
         """
-        from server.pipeline.text_renderer import _LINE_HEIGHT_RATIO_MANY, _PADDING
+        from server.pipeline.text_renderer import _MIN_FONT_SIZE
 
         img = np.zeros((82, 23, 3), dtype=np.uint8)
         bbox = (0, 0, 23, 82)
-        text = "그럼 유리하마로 가볼게요~!"  # 16 chars → 16 lines at usable_w=11px
+        text = "그럼 유리하마로 가볼게요~!"  # many chars at usable_w=11px
 
         result, font_size, adj_bbox = await renderer.render(img, text, bbox, text_direction="vertical")
 
-        # For vert→horiz, render_w = _vert_cap = max(23*4, 80) = 92
-        render_w = max(23 * 4, 80)  # 92
-        font = renderer._load_font(font_size)
-        usable_w = max(render_w - _PADDING * 2, 1)
-        lines = renderer._wrap_text(text, font, usable_w)
-        num_lines = len(lines)
-        lhr = _LINE_HEIGHT_RATIO_MANY if num_lines > 2 else 1.3
-        line_height = int(font_size * lhr)
-        needed_h = num_lines * line_height + _PADDING * 2
-
-        # Overlay width must be the expanded render_w (_vert_cap)
-        assert result.shape[1] == render_w, (
-            f"Overlay width {result.shape[1]} must be {render_w} (_vert_cap render width)"
+        # Overlay width must be the actual balloon width (bw)
+        assert result.shape[1] == 23, (
+            f"Overlay width {result.shape[1]} must be 23 (balloon bbox width)"
         )
-        # Overlay height must hold all wrapped lines
-        assert result.shape[0] >= needed_h, (
-            f"Overlay height {result.shape[0]}px cannot fit {num_lines} wrapped lines "
-            f"(needs {needed_h}px at font_size={font_size}). "
-            f"Characters beyond line {result.shape[0] // line_height} are silently clipped."
+        # For extreme narrow balloons the font bottoms out at _MIN_FONT_SIZE
+        assert font_size == _MIN_FONT_SIZE, (
+            f"Expected font reduced to minimum {_MIN_FONT_SIZE}, got {font_size}"
+        )
+        # Overlay height is capped at balloon height (vertical overflow accepted for extremes)
+        assert result.shape[0] == 82, (
+            f"Overlay height should equal balloon height 82, got {result.shape[0]}"
         )
 
     async def test_font_size_used_nonzero_for_nonempty_text(self, renderer):
@@ -956,3 +1013,92 @@ class TestMagiCacheKeySeparation:
         assert "bubble_detector" in _model_cache
         assert "magi_detector" in _model_cache
         _model_cache.clear()
+
+
+def test_merge_proximity_does_not_merge_large_small_box():
+    """큰 말풍선과 작은 말풍선이 근접해도 면적 비율 3배 초과 시 병합되지 않아야 함."""
+    from server.pipeline.bubble_detector import _merge_proximity_boxes
+    import numpy as np
+
+    # 큰 박스 (y:99-299, x:114-304) 면적=38000
+    # 작은 박스 (y:270-330, x:114-204) 면적=5400
+    # 둘의 v_gap=0 (약간 y-overlap), h_gap=0 → 병합 후보
+    # 면적 비율 ≈ 7:1 → 병합하면 안 됨
+    boxes = np.array([
+        [114, 99, 304, 299],   # 큰 박스 190×200
+        [114, 270, 204, 330],  # 작은 박스 90×60
+    ], dtype=np.float32)
+    scores = np.array([0.9, 0.8])
+    cls_ids = np.array([0, 0])
+
+    result_boxes, _, _ = _merge_proximity_boxes(boxes, scores, cls_ids, gap_thresh=25.0)
+    assert len(result_boxes) == 2, (
+        f"큰 박스({190*200}px²)와 작은 박스({90*60}px²) 면적 비율 7:1 → 병합하면 안 됨. "
+        f"결과: {len(result_boxes)}개"
+    )
+
+
+def test_merge_proximity_does_not_merge_ratio_4x():
+    """실제 버그 케이스: 면적 비율 4.4:1 (16041 vs 3639) 박스도 병합되지 않아야 함."""
+    from server.pipeline.bubble_detector import _merge_proximity_boxes
+    import numpy as np
+
+    # 실제 감지된 boxes (model space): x1=117,y1=133,x2=173,y2=198 / x1=186,y1=62,x2=322,y2=180
+    # h_gap=13px, y_overlap=47px, area_ratio=16041/3639≈4.41 → 3.0 threshold에서 차단되어야 함
+    boxes = np.array([
+        [117, 133, 173, 198],  # 작은 박스 56×65 = 3640px²
+        [186,  62, 322, 180],  # 큰 박스 136×118 = 16048px²
+    ], dtype=np.float32)
+    scores = np.array([0.85, 0.90])
+    cls_ids = np.array([0, 0])
+
+    result_boxes, _, _ = _merge_proximity_boxes(boxes, scores, cls_ids, gap_thresh=25.0)
+    assert len(result_boxes) == 2, (
+        f"면적 비율 4.41:1 → 3.0 임계값에서 병합하면 안 됨. 결과: {len(result_boxes)}개"
+    )
+
+
+def test_merge_proximity_merges_similar_sized_columns():
+    """세로쓰기 컬럼 단편 (비슷한 면적, 좁고 긴 박스)은 여전히 병합되어야 함."""
+    from server.pipeline.bubble_detector import _merge_proximity_boxes
+    import numpy as np
+
+    # 좁고 긴 컬럼 2개, 수평으로 15px 간격
+    # 각 컬럼 20×180, 면적=3600, 비율≈1:1
+    boxes = np.array([
+        [100, 50, 120, 230],   # 컬럼1 20×180
+        [135, 50, 155, 230],   # 컬럼2 20×180 (15px gap)
+    ], dtype=np.float32)
+    scores = np.array([0.9, 0.8])
+    cls_ids = np.array([0, 0])
+
+    result_boxes, _, _ = _merge_proximity_boxes(boxes, scores, cls_ids, gap_thresh=25.0)
+    assert len(result_boxes) == 1, (
+        f"비슷한 면적의 세로쓰기 컬럼 단편은 병합되어야 함. 결과: {len(result_boxes)}개"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestTranslatorPostprocess — 번역 실패 감지
+# ---------------------------------------------------------------------------
+
+def test_postprocess_discards_kanji_only_output():
+    """한자만 있고 한국어 없는 출력(예: 自明の理！)은 번역 실패로 빈 문자열 반환."""
+    from server.pipeline.translator import _postprocess
+    result = _postprocess("自明の理！", "自明の理！")
+    assert result == "", f"한자만 있는 출력은 버려야 함. got: {result!r}"
+
+
+def test_postprocess_discards_kana_in_kanji_mix():
+    """히라가나 포함 출력도 빈 문자열 반환 (기존 N4 검사 유지)."""
+    from server.pipeline.translator import _postprocess
+    result = _postprocess("自明なる理！", "自明の理！")
+    assert result == "", f"가나 포함 출력은 버려야 함. got: {result!r}"
+
+
+def test_postprocess_passes_korean_with_kanji():
+    """한국어 + 한자 혼용 (예: 자명한 이치) 은 통과해야 함."""
+    from server.pipeline.translator import _postprocess
+    result = _postprocess("자명한 이치!", "自明の理！")
+    assert result != "", f"한국어 포함 출력은 통과해야 함. got: {result!r}"
+    assert "자명" in result or "이치" in result

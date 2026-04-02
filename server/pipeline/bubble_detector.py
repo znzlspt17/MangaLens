@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 _MODEL_INPUT_SIZE = 1024
 _CONF_THRESH = 0.35
 _NMS_IOU = 0.45
-_MERGE_IOU = 0.25  # post-NMS overlap threshold: merge boxes that overlap this much
-_PROXIMITY_GAP = 25  # max edge-to-edge gap (px, model space) for proximity merge
+_MERGE_IOU = 0.35  # post-NMS overlap threshold: merge boxes that overlap this much
+_PROXIMITY_GAP = 8   # max edge-to-edge gap (px, model space) for proximity merge
 _MIN_AREA = 100
 _SEG_THRESHOLD = 0.4  # text_seg sigmoid threshold for bubble interior
 
@@ -297,8 +297,17 @@ def _merge_proximity_boxes(
                 x_ratio = x_overlap / min_w
                 y_ratio = y_overlap / min_h
 
-                if x_ratio < 0.3 and y_ratio < 0.3:
+                if x_ratio < 0.5 and y_ratio < 0.5:
                     continue
+
+                # 면적 비율 가드: 두 박스 면적이 2배 이상 차이나면 병합하지 않음
+                # (세로쓰기 컬럼 단편 ≈ 면적 비슷 1:1~2:1, 별개 말풍선 ≈ 면적 크게 다름 2:1+)
+                area1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+                area2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+                if area1 > 0 and area2 > 0:
+                    area_ratio = max(area1, area2) / min(area1, area2)
+                    if area_ratio > 2.0:
+                        continue
 
                 gap = max(h_gap, v_gap)
                 if gap < best_gap:

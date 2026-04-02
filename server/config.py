@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     upscaler_variant: str = "anime_6b"  # anime_6b | x4plus
 
     # Detector
-    use_magi_detector: bool = False  # True → Magi v2, False → YOLOv5
+    use_magi_detector: bool = True  # True → Magi v2, False → YOLOv5
     magi_vram_threshold_mb: int = 4096  # Magi v2 requires ≥4GB VRAM
 
     # Server

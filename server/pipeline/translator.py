@@ -111,11 +111,14 @@ def _ensure_model_loaded(device: str = "cpu") -> None:
                 "Run: uv add transformers"
             ) from exc
 
+        from server.config import settings
+
         logger.info("Loading %s on device=%s ...", _HUNYUAN_MODEL_ID, device)
 
         _tokenizer = AutoTokenizer.from_pretrained(
             _HUNYUAN_MODEL_ID,
             trust_remote_code=True,
+            cache_dir=settings.model_cache_dir,
         )
 
         # fp16 on GPU, fp32 on CPU (fp16 unsupported on most CPU builds).
@@ -126,6 +129,7 @@ def _ensure_model_loaded(device: str = "cpu") -> None:
             torch_dtype=torch_dtype,
             device_map=device,          # "auto" also works when accelerate is installed
             trust_remote_code=True,
+            cache_dir=settings.model_cache_dir,
         )
         _model.eval()
         _model_device = device
@@ -219,6 +223,11 @@ _NOTE_MARKERS = ("**note:", "(note:", "[note:", "※", "translation note", "참�
 # If detected in result, the translation failed (returned Japanese).
 _JA_KANA_RE = re.compile(r"[\u3040-\u30FF]")
 
+# N4-ext: CJK Unified Ideographs (kanji only, no kana) with no Korean hangul.
+# Catches cases like "自明の理！" where the model echoes back pure-kanji input.
+_CJK_RE = re.compile(r"[\u4E00-\u9FFF]")
+_KO_HANGUL_RE = re.compile(r"[\uAC00-\uD7A3]")
+
 
 def _postprocess(raw: str, src_text: str) -> str:
     """Remove common LLM noise artefacts from a translated string.
@@ -264,6 +273,14 @@ def _postprocess(raw: str, src_text: str) -> str:
     if _JA_KANA_RE.search(text):
         logger.warning(
             "[postprocess] Japanese kana detected in output — discarding: %s…", text[:40]
+        )
+        return ""
+
+    # 4b. N4-ext: If result contains CJK kanji but NO Korean hangul, the model
+    #     echoed back the original (e.g. "自明の理！") — discard as translation failure.
+    if _CJK_RE.search(text) and not _KO_HANGUL_RE.search(text):
+        logger.warning(
+            "[postprocess] CJK kanji in output with no Korean hangul — discarding: %s…", text[:40]
         )
         return ""
 
@@ -453,10 +470,15 @@ def _translate_batch_context_sync(
         # Post-process each line
         results = [_postprocess(t, src) for t, src in zip(parsed, texts)]
 
-        # Fill any empty slots with fallback
-        for i, (r, orig) in enumerate(zip(results, texts)):
-            if not r.strip():
-                results[i] = orig
+        # Empty slots mean _postprocess discarded the translation (failed).
+        # Keep them as "" — the orchestrator will fall back to OCR text.
+        # Do NOT restore the original Japanese text here.
+        empty_count = sum(1 for r in results if not r.strip())
+        if empty_count:
+            logger.warning(
+                "[batch-translate] %d/%d translations discarded by postprocess",
+                empty_count, len(results),
+            )
 
         logger.info("[batch-translate] Success: %d/%d lines parsed", len(results), len(texts))
         return results
@@ -532,6 +554,23 @@ class Translator:
                     _translate_batch_context_sync, texts, self.source_lang, self.target_lang
                 )
                 if batch_results is not None:
+                    # Retry empty slots (postprocess discarded) individually
+                    empty_idx = [i for i, r in enumerate(batch_results) if not r.strip()]
+                    if empty_idx:
+                        logger.info(
+                            "[translate_batch] %d empty slot(s) after batch — retrying individually",
+                            len(empty_idx),
+                        )
+                        retry_texts = [texts[i] for i in empty_idx]
+                        try:
+                            retry_results = await asyncio.to_thread(
+                                _translate_texts_sync, retry_texts, self.source_lang, self.target_lang
+                            )
+                            for i, result in zip(empty_idx, retry_results):
+                                if result.strip():
+                                    batch_results[i] = result
+                        except Exception:
+                            logger.warning("[translate_batch] Individual retry failed", exc_info=True)
                     return batch_results
                 logger.info("Batch context returned None — falling back to individual translation")
             except Exception:

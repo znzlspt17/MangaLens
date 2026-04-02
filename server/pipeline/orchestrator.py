@@ -286,7 +286,9 @@ async def run_pipeline(
     for ctx in contexts:
         if ctx.skipped:
             continue
-        text = ctx.translated_text or (ctx.ocr.text if ctx.ocr else "")
+        # Use only the translated text. If empty (translation discarded by postprocess),
+        # render blank so the erased bubble stays clean rather than showing original Japanese.
+        text = ctx.translated_text
         rendered, font_size, adj_bbox = await renderer.render(
             erased_image,
             text,

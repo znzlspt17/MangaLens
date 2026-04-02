@@ -14,8 +14,10 @@ from PIL import Image, ImageDraw, ImageFont
 logger = logging.getLogger(__name__)
 
 _PADDING = 6
+_PADDING_PCT = 0.08  # extra per-side margin (balloon oval shape safety)
+# 0.08 = relaxed oval safety margin — gives ~84% usable width/height
 _MIN_FONT_SIZE = 12
-_MAX_VERT_FONT_SIZE = 36  # Cap font for vertical→horizontal to prevent artwork overlay
+_MAX_VERT_FONT_SIZE = 80  # Soft cap — binary search is the primary constraint
 _TEXT_COLOR = (0, 0, 0)
 _STROKE_COLOR = (255, 255, 255)
 _FONT_WEIGHT = 700  # Bold weight for variable fonts
@@ -124,6 +126,7 @@ class TextRenderer:
             return np.zeros((h, w, 4), dtype=np.uint8), 0, bbox
 
         bx, by, bw, bh = bbox
+        logger.debug("render: bbox=(%d,%d,%d,%d) text=%r", bx, by, bw, bh, text[:40])
 
         # N7: Auto text color — white text on dark backgrounds, black on light.
         _h_img, _w_img = bubble_image.shape[:2]
@@ -149,32 +152,19 @@ class TextRenderer:
         # the rendered translation.
         use_vertical = False
 
-        # When the source text was vertical (narrow-w / tall-h bbox), rendering
-        # horizontal Korean into the original narrow width causes severe clipping.
-        # Fix: use the bbox *height* as the available rendering width, and
-        # re-centre the (now wider) overlay on the original bbox centre.
-        is_vert_src = text_direction == "vertical"
-        if is_vert_src:
-            # Japanese vertical text is detected as narrow bbox (bw=5-30).
-            # The actual speech balloon is much wider than the detected text
-            # strip.  Use _vert_cap as the render canvas width so Korean
-            # horizontal text has adequate space.  The overlay is centred on
-            # the original bbox centre, and font sizing uses the full canvas.
-            _vert_cap = max(bw * 4, 80)
-            render_w = _vert_cap
-            fit_h = max(bh, render_w)
-        else:
-            render_w = bw
-            fit_h = bh
+        # The balloon detector returns the full speech-balloon bbox (not just the
+        # text column).  Render Korean horizontally within the actual balloon size.
+        # No canvas expansion: bw IS the balloon width.
+        render_w = bw
+        fit_h = bh
 
-        usable_w = max(render_w - _PADDING * 2, 1)
-        usable_h = max(fit_h - _PADDING * 2, 1)
+        pad_x = max(_PADDING, int(bw * _PADDING_PCT))
+        pad_y = max(_PADDING, int(bh * _PADDING_PCT))
+        usable_w = max(render_w - pad_x * 2, 1)
+        usable_h = max(fit_h - pad_y * 2, 1)
 
         font_size = self._find_best_font_size(text, usable_w, usable_h, use_vertical)
-        # Cap font size for vertical→horizontal conversions to prevent
-        # oversized text that covers surrounding artwork.
-        if is_vert_src:
-            font_size = min(font_size, _MAX_VERT_FONT_SIZE)
+        logger.debug("render: pad=(%d,%d) usable=(%d,%d) font=%d", pad_x, pad_y, usable_w, usable_h, font_size)
         font = self._load_font(font_size)
 
         # B-3: Adaptive stroke width proportional to font size
@@ -190,51 +180,28 @@ class TextRenderer:
         num_lines = len(lines)
         line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
         line_height = int(font_size * line_height_ratio)
-        needed_h = num_lines * line_height + _PADDING * 2
+        needed_h = num_lines * line_height + pad_y * 2
 
-        if is_vert_src:
-            # For vertical→horizontal: allow overlay to extend up to fit_h
-            # (which may exceed bh for small bubbles) so text stays readable.
-            while needed_h > fit_h and font_size > _MIN_FONT_SIZE:
-                font_size -= 1
-                font = self._load_font(font_size)
-                stroke_width = max(1, font_size // 20)
-                wrap_w = max(usable_w - 2 * stroke_width, 1)
-                lines = self._wrap_text(text, font, wrap_w)
-                num_lines = len(lines)
-                line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
-                line_height = int(font_size * line_height_ratio)
-                needed_h = num_lines * line_height + _PADDING * 2
-            actual_render_h = min(needed_h, fit_h)
-        else:
-            # Narrow horizontal-bubble fix: reduce font until text fits in bh.
-            while needed_h > bh and font_size > _MIN_FONT_SIZE:
-                font_size -= 1
-                font = self._load_font(font_size)
-                stroke_width = max(1, font_size // 20)
-                wrap_w = max(usable_w - 2 * stroke_width, 1)
-                lines = self._wrap_text(text, font, wrap_w)
-                num_lines = len(lines)
-                line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
-                line_height = int(font_size * line_height_ratio)
-                needed_h = num_lines * line_height + _PADDING * 2
-            actual_render_h = bh  # Never exceed original bubble height
+        # Reduce font until text fits within balloon height
+        while needed_h > bh and font_size > _MIN_FONT_SIZE:
+            font_size -= 1
+            font = self._load_font(font_size)
+            stroke_width = max(1, font_size // 20)
+            wrap_w = max(usable_w - 2 * stroke_width, 1)
+            lines = self._wrap_text(text, font, wrap_w)
+            num_lines = len(lines)
+            line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
+            line_height = int(font_size * line_height_ratio)
+            needed_h = num_lines * line_height + pad_y * 2
+        actual_render_h = bh  # Always use full balloon height for overlay
 
         # Create RGBA overlay at the (possibly expanded) render dimensions.
         overlay = Image.new("RGBA", (render_w, actual_render_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-        self._draw_horizontal(draw, font, lines, usable_w, actual_render_h - _PADDING * 2, font_size, stroke_width, _text_color, _stroke_color)
+        self._draw_horizontal(draw, font, lines, usable_w, actual_render_h - pad_y * 2, font_size, stroke_width, pad_x, pad_y, _text_color, _stroke_color)
 
-        # Compute the adjusted bbox so the compositor places the overlay correctly.
-        if is_vert_src:
-            # Centre the wider overlay on the original bbox centre point.
-            cx = bx + bw // 2
-            cy = by + bh // 2
-            new_x = cx - render_w // 2
-            new_y = cy - actual_render_h // 2
-            adj_bbox: tuple[int, int, int, int] = (new_x, new_y, render_w, actual_render_h)
-        else:
-            adj_bbox = (bx, by, render_w, actual_render_h)
+        # Overlay always placed at balloon position (no expansion, no re-centering needed).
+        adj_bbox: tuple[int, int, int, int] = (bx, by, render_w, actual_render_h)
 
         return np.array(overlay, dtype=np.uint8), font_size, adj_bbox
 
@@ -247,6 +214,8 @@ class TextRenderer:
         usable_h: int,
         font_size: int,
         stroke_width: int = 2,
+        pad_x: int = _PADDING,
+        pad_y: int = _PADDING,
         text_color: tuple[int, int, int] = _TEXT_COLOR,
         stroke_color: tuple[int, int, int] = _STROKE_COLOR,
     ) -> None:
@@ -255,13 +224,13 @@ class TextRenderer:
         line_height_ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
         line_height = int(font_size * line_height_ratio)
         total_text_height = line_height * num_lines
-        y_start = _PADDING + max((usable_h - total_text_height) // 2, 0)
+        y_start = pad_y + max((usable_h - total_text_height) // 2, 0)
 
         for i, line in enumerate(lines):
             line_w = font.getlength(line)
             # Ensure x is at least stroke_width so the left stroke outline
             # never falls outside (or right at the edge of) the overlay.
-            x = max(stroke_width, _PADDING + max((usable_w - int(line_w)) // 2, 0))
+            x = max(stroke_width, pad_x + max((usable_w - int(line_w)) // 2, 0))
             y = y_start + i * line_height
             draw.text(
                 (x, y),
@@ -367,7 +336,10 @@ class TextRenderer:
             col_width = int(font_size * _LINE_HEIGHT_RATIO_FEW)
             return num_cols * col_width <= usable_w
         else:
-            lines = self._wrap_text(text, font, usable_w)
+            # Use the same wrap_w as render() — subtract stroke outline width
+            stroke_width = max(1, font_size // 20)
+            wrap_w = max(usable_w - 2 * stroke_width, 1)
+            lines = self._wrap_text(text, font, wrap_w)
             num_lines = len(lines)
             # Use the same ratio that render() will actually use
             ratio = _LINE_HEIGHT_RATIO_FEW if num_lines <= 2 else _LINE_HEIGHT_RATIO_MANY
@@ -394,20 +366,21 @@ class TextRenderer:
             current_line = ""
             for word in words:
                 test_line = current_line + word
-                if font.getlength(test_line) > max_width and current_line:
-                    lines.append(current_line.rstrip())
-                    current_line = word.lstrip()
-                elif font.getlength(test_line) > max_width and not current_line:
-                    # Single word exceeds max_width — break by character
-                    for ch in word:
+                if font.getlength(test_line) <= max_width:
+                    current_line = test_line
+                else:
+                    # Flush the current line (if any) then char-break the word
+                    if current_line:
+                        lines.append(current_line.rstrip())
+                        current_line = ""
+                    # Always char-break the overflowing word from a fresh line
+                    for ch in word.lstrip():
                         test_ch = current_line + ch
                         if font.getlength(test_ch) > max_width and current_line:
                             lines.append(current_line)
                             current_line = ch
                         else:
                             current_line = test_ch
-                else:
-                    current_line = test_line
             if current_line:
                 lines.append(current_line.rstrip())
 
