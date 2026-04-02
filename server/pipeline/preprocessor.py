@@ -113,32 +113,36 @@ def remove_furigana(image: np.ndarray) -> np.ndarray:
 
 
 def _patch_basicsr() -> None:
-    """Patch basicsr's broken torchvision import at runtime if needed."""
-    try:
-        import importlib
-        mod = importlib.import_module("basicsr.data.degradations")
-    except ImportError:
-        # basicsr not installed — nothing to patch
+    """Patch basicsr's broken torchvision import at runtime if needed.
+
+    Uses importlib.util.find_spec to locate the installed basicsr package
+    WITHOUT importing it (importing triggers the broken degradations.py).
+    """
+    import importlib.util
+
+    spec = importlib.util.find_spec("basicsr")
+    if spec is None or spec.origin is None:
+        return  # basicsr not installed
+
+    basicsr_pkg = Path(spec.origin).parent  # …/site-packages/basicsr/
+    path = basicsr_pkg / "data" / "degradations.py"
+    if not path.exists():
         return
-    except ModuleNotFoundError:
-        path = Path("basicsr/data/degradations.py")
-        # Find the actual installed file
-        import basicsr.data as _bd
-        path = Path(_bd.__file__).parent / "degradations.py"
-        if not path.exists():
-            return
-        src = path.read_text()
-        old = "from torchvision.transforms.functional_tensor import rgb_to_grayscale"
-        if old not in src:
-            return
-        new = (
-            "try:\n"
-            "    from torchvision.transforms.functional_tensor import rgb_to_grayscale\n"
-            "except ImportError:\n"
-            "    from torchvision.transforms.functional import rgb_to_grayscale"
-        )
-        path.write_text(src.replace(old, new))
-        logger.info("Patched basicsr torchvision import")
+
+    src = path.read_text(encoding="utf-8")
+    # Match only the top-level (unindented) import — NOT inside a try block
+    old = "\nfrom torchvision.transforms.functional_tensor import rgb_to_grayscale\n"
+    if old not in src:
+        return  # already patched or different version
+
+    new = (
+        "\ntry:\n"
+        "    from torchvision.transforms.functional_tensor import rgb_to_grayscale\n"
+        "except ImportError:\n"
+        "    from torchvision.transforms.functional import rgb_to_grayscale\n"
+    )
+    path.write_text(src.replace(old, new), encoding="utf-8")
+    logger.info("Patched basicsr torchvision import in %s", path)
 
 
 _patch_basicsr()

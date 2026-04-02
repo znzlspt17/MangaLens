@@ -311,3 +311,55 @@
 - **파일**: `server/pipeline/text_renderer.py`
 - **관련 결정**: D-022 (스트로크 인식 줄바꿈), D-027 (scale-down 제거)
 
+---
+
+## D-033: Magi v2 필수 패키지 추가 (einops + pulp) — Phase 19
+
+- **결정**: `pyproject.toml`에 `"einops>=0.8"`, `"pulp>=2.9"` 추가 후 `uv sync`로 설치 (einops 0.8.2, pulp 3.3.0)
+- **근거**: `USE_MAGI_DETECTOR=true` 설정 시 `magiv2` 모델 로딩에서 `ModuleNotFoundError: No module named 'einops'` 및 `'pulp'` 발생. 두 패키지 모두 `ragavsachdeva/magiv2`의 직접 의존성이나 `pyproject.toml`에 누락되어 있었음
+- **파일**: `pyproject.toml`
+- **관련 결정**: D-011 (Magi v2 통합)
+
+---
+
+## D-034: 연결 말풍선 자동 분리 — _split_tall_boxes() 추가 — Phase 19
+
+- **결정**: `bubble_detector.py`에 `_split_tall_boxes()` 함수 추가. NMS → 병합 → 근접 병합 → 스케일 변환 이후, bbox 확장 전에 실행
+- **근거**: 세로로 높은 하나의 bbox 내에 두 개의 연결된 말풍선이 묶여 검출되는 케이스 발생 (예: 가운데가 좁아진 모래시계 형태). 텍스트 세그멘테이션 마스크(`seg_full`)의 행 방향 밀도를 스캔하여 "핀치 포인트"(골짜기)를 탐색하고, 조건 만족 시 두 박스로 분리
+- **분리 조건**: `h/w ≥ _SPLIT_ASPECT(3.0)`, `h ≥ _SPLIT_MIN_H(80px)`, 골짜기 밀도 `< peak × _SPLIT_VALLEY_RATIO(0.30)`, 분리된 각 파트 `≥ 30px`
+- **상수**: `_SPLIT_ASPECT=3.0`, `_SPLIT_MIN_H=80`, `_SPLIT_VALLEY_RATIO=0.30`
+- **파일**: `server/pipeline/bubble_detector.py`
+
+---
+
+## D-035: 말풍선 bbox 자동 확장 — _expand_bbox_to_balloon() 추가 — Phase 19
+
+- **결정**: `bubble_detector.py`에 `_expand_bbox_to_balloon()` 함수 추가. `_split_tall_boxes()` 이후, `_dedup_expanded_boxes()` 전에 실행
+- **근거**: YOLO 검출 bbox가 실제 말풍선보다 좁게 잡혀 텍스트 렌더링 영역이 부족하고 글자가 잘리는 문제. 특히 세로쓰기 말풍선(좁고 긴 형태)에서 빈번. 원본 이미지 픽셀 밝기를 기준으로 4방향 확장을 시도하여 실제 말풍선 경계까지 bbox를 넓힘
+- **확장 로직**: 각 방향으로 최대 `_EXPAND_MAX_PX(80px)` 탐색. 픽셀 평균 밝기 `< _EXPAND_BRIGHTNESS(200)`이면 확장 중단. 확장 후 `_EXPAND_INSET(4px)` 안전 여백 적용
+- **허위 양성 방지**: bbox 내부 평균 밝기 `< 160` → 어두운 배경(바지, 어두운 패널 등) 위의 장면 텍스트로 판단, 확장 건너뜀. 말풍선 내부는 흰색(평균 200+), 비말풍선 배경은 훨씬 낮음
+- **검증 강화**: `seg_full` 전달 시 확장 면적이 1.5배 이상으로 커지면 seg 밀도 비교 — 원본 밀도 대비 1/3 미만이면 확장 취소
+- **제거**: `text_renderer.py`의 `_probe_balloon_width()` 80줄 제거 (역할이 탐지기 계층으로 이전됨)
+- **상수**: `_EXPAND_BRIGHTNESS=200`, `_EXPAND_MAX_PX=80`, `_EXPAND_INSET=4`
+- **파일**: `server/pipeline/bubble_detector.py`, `server/pipeline/text_renderer.py`
+
+---
+
+## D-036: 확장 후 중복 박스 제거 — _dedup_expanded_boxes() 추가 — Phase 19
+
+- **결정**: `bubble_detector.py`에 `_dedup_expanded_boxes()` 함수 추가. `_expand_bbox_to_balloon()` 직후 실행
+- **근거**: 분리(split)  + 확장(expand) 후 인접한 두 bbox가 서로 침범하는 경우 발생 (예: bubble 1 (375,36,57,187)과 bubble 2 (378,130,52,93)가 확장 후 겹침). 겹침이 작은 박스 면적의 50% 이상이면 큰 박스로 흡수(병합)
+- **병합 기준**: `intersection / min(area1, area2) ≥ containment_ratio(0.50)` → 작은 박스를 큰 박스에 흡수
+- **파일**: `server/pipeline/bubble_detector.py`
+
+---
+
+## D-037: 어두운 내부 검사 — 비말풍선 영역 확장 방지 — Phase 19
+
+- **결정**: `_expand_bbox_to_balloon()` 내에서 각 박스 처리 전 bbox 내부 평균 밝기를 검사하여 160 미만이면 확장 없이 원본 bbox 반환
+- **근거**: YOLO 검출기가 어두운 배경 위 장면 텍스트(scene text, 예: 검은 바지/옷 위의 `そして、`)도 검출함. 이 경우 `_expand_bbox_to_balloon()`이 주변 밝은 배경 픽셀로 가장자리를 탐색하다 말풍선 외부 영역까지 bbox를 크게 확장하는 허위 양성 발생. 말풍선 내부는 흰색(평균 밝기 ~200–250)이고 장면 텍스트 배경은 훨씬 어두우므로(< 160), 이 임계값으로 안전하게 구분 가능
+- **임계값**: 160 (말풍선 흰색 ~200+ vs 장면 배경 ~50–130)
+- **로깅**: `logger.debug("Expand skipped ... dark interior (mean=...)")` 진단 로그 포함
+- **파일**: `server/pipeline/bubble_detector.py`
+- **관련 결정**: D-035 (확장 함수 전체 설계)
+

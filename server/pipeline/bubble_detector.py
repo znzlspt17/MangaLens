@@ -30,6 +30,12 @@ _MERGE_IOU = 0.35  # post-NMS overlap threshold: merge boxes that overlap this m
 _PROXIMITY_GAP = 8   # max edge-to-edge gap (px, model space) for proximity merge
 _MIN_AREA = 100
 _SEG_THRESHOLD = 0.4  # text_seg sigmoid threshold for bubble interior
+_SPLIT_ASPECT = 3.0   # split tall boxes when h/w exceeds this ratio
+_SPLIT_MIN_H = 80     # minimum height (px, original) to consider splitting
+_SPLIT_VALLEY_RATIO = 0.30  # valley must be < 30% of peak density to split
+_EXPAND_BRIGHTNESS = 200    # brightness threshold for balloon interior
+_EXPAND_MAX_PX = 80         # max pixels to expand in any direction
+_EXPAND_INSET = 4           # safety inset from detected boundary
 
 
 # ------------------------------------------------------------------
@@ -344,6 +350,310 @@ def _merge_proximity_boxes(
     return boxes, scores, cls_ids
 
 
+def _split_tall_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    scores_list: list[float],
+    cls_list: list[int],
+    seg_full: "np.ndarray | None",
+) -> "tuple[list[tuple[int,int,int,int]], list[float], list[int]]":
+    """Split boxes that are very tall at horizontal pinch-points.
+
+    When two speech bubbles are physically connected by a narrow bridge,
+    the detector may return a single bounding box covering both.  This
+    function analyses the text-segmentation mask row-by-row within each
+    tall box and splits at the row with the lowest horizontal density,
+    provided the valley is deep enough.
+
+    Parameters are in **original image** coordinates.
+    """
+    if seg_full is None:
+        return boxes, scores_list, cls_list
+
+    out_boxes: list[tuple[int, int, int, int]] = []
+    out_scores: list[float] = []
+    out_cls: list[int] = []
+
+    for (bx, by, bw, bh), score, cid in zip(boxes, scores_list, cls_list):
+        # Only consider very tall boxes
+        if bh < _SPLIT_MIN_H or bw <= 0 or bh <= bw * _SPLIT_ASPECT:
+            out_boxes.append((bx, by, bw, bh))
+            out_scores.append(score)
+            out_cls.append(cid)
+            continue
+
+        roi = seg_full[by : by + bh, bx : bx + bw]
+        row_density = roi.sum(axis=1)  # (bh,)
+
+        peak = row_density.max()
+        if peak == 0:
+            out_boxes.append((bx, by, bw, bh))
+            out_scores.append(score)
+            out_cls.append(cid)
+            continue
+
+        # Smooth to ignore single-row noise
+        kernel_size = max(3, bh // 20)
+        kernel = np.ones(kernel_size) / kernel_size
+        smoothed = np.convolve(row_density, kernel, mode="same")
+
+        # Search in the middle 60% (skip top/bottom 20%)
+        margin = max(10, int(bh * 0.15))
+        search = smoothed[margin : bh - margin]
+        if len(search) < 10:
+            out_boxes.append((bx, by, bw, bh))
+            out_scores.append(score)
+            out_cls.append(cid)
+            continue
+
+        valley_idx = int(np.argmin(search))
+        valley_val = search[valley_idx]
+        search_peak = search.max()
+
+        if search_peak > 0 and valley_val < search_peak * _SPLIT_VALLEY_RATIO:
+            split_row = margin + valley_idx  # relative to by
+            # Ensure each half has reasonable height
+            top_h = split_row
+            bot_h = bh - split_row
+            if top_h >= 30 and bot_h >= 30:
+                out_boxes.append((bx, by, bw, top_h))
+                out_scores.append(score)
+                out_cls.append(cid)
+                out_boxes.append((bx, by + split_row, bw, bot_h))
+                out_scores.append(score)
+                out_cls.append(cid)
+                logger.debug(
+                    "Split tall box (%d,%d,%d,%d) at row %d → heights %d+%d",
+                    bx, by, bw, bh, split_row, top_h, bot_h,
+                )
+                continue
+
+        out_boxes.append((bx, by, bw, bh))
+        out_scores.append(score)
+        out_cls.append(cid)
+
+    return out_boxes, out_scores, out_cls
+
+
+def _expand_bbox_to_balloon(
+    image: np.ndarray,
+    boxes: list[tuple[int, int, int, int]],
+    seg_full: "np.ndarray | None" = None,
+) -> list[tuple[int, int, int, int]]:
+    """Expand text-tight bboxes outward to the actual balloon boundary.
+
+    The text detector returns bboxes that hug the glyph edges.  This
+    function probes outward from each edge of the bbox on the **original**
+    image.  A row/column is considered part of the balloon interior when
+    its mean brightness exceeds *_EXPAND_BRIGHTNESS*.  Expansion stops at
+    the first row/column below the threshold, or after *_EXPAND_MAX_PX*.
+
+    After expansion, the text segmentation mask (*seg_full*) is used to
+    validate: if the expanded area has very low text-seg coverage
+    (< 5 % of original bbox coverage), the expansion is reverted to
+    prevent false expansion into bright non-text areas (e.g., gaps in
+    artwork, page margins).
+
+    The expansion only grows — if the bbox is already at the balloon edge,
+    it stays the same.  An *_EXPAND_INSET* safety margin is subtracted from
+    each expanded direction so the bbox stays slightly inside the balloon.
+    """
+    img_h, img_w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+    out: list[tuple[int, int, int, int]] = []
+    for (bx, by, bw, bh) in boxes:
+        x1, y1, x2, y2 = bx, by, bx + bw, by + bh
+
+        # Skip expansion for dark-interior bboxes (scene text overlaid on dark
+        # artwork / clothing).  Speech balloons are white inside (mean ≥ ~200);
+        # dark regions (legs, dark panels, etc.) average much lower.
+        interior = gray[max(0, y1):min(img_h, y2), max(0, x1):min(img_w, x2)]
+        if interior.size == 0 or float(interior.mean()) < 160:
+            logger.debug(
+                "Expand skipped (%d,%d,%d,%d): dark interior (mean=%.1f)",
+                bx, by, bw, bh, float(interior.mean()) if interior.size else 0,
+            )
+            out.append((bx, by, bw, bh))
+            continue
+
+        # Expand left
+        new_x1 = x1
+        for dx in range(1, _EXPAND_MAX_PX + 1):
+            col = x1 - dx
+            if col < 0:
+                break
+            strip_mean = float(gray[y1:y2, col].mean()) if y2 > y1 else 0
+            if strip_mean < _EXPAND_BRIGHTNESS:
+                break
+            new_x1 = col
+
+        # Expand right
+        new_x2 = x2
+        for dx in range(1, _EXPAND_MAX_PX + 1):
+            col = x2 + dx - 1
+            if col >= img_w:
+                break
+            strip_mean = float(gray[y1:y2, col].mean()) if y2 > y1 else 0
+            if strip_mean < _EXPAND_BRIGHTNESS:
+                break
+            new_x2 = x2 + dx
+
+        # Expand up
+        new_y1 = y1
+        for dy in range(1, _EXPAND_MAX_PX + 1):
+            row = y1 - dy
+            if row < 0:
+                break
+            strip_mean = float(gray[row, new_x1:new_x2].mean()) if new_x2 > new_x1 else 0
+            if strip_mean < _EXPAND_BRIGHTNESS:
+                break
+            new_y1 = row
+
+        # Expand down
+        new_y2 = y2
+        for dy in range(1, _EXPAND_MAX_PX + 1):
+            row = y2 + dy - 1
+            if row >= img_h:
+                break
+            strip_mean = float(gray[row, new_x1:new_x2].mean()) if new_x2 > new_x1 else 0
+            if strip_mean < _EXPAND_BRIGHTNESS:
+                break
+            new_y2 = y2 + dy
+
+        # Apply safety inset
+        new_x1 = min(new_x1 + _EXPAND_INSET, x1)
+        new_y1 = min(new_y1 + _EXPAND_INSET, y1)
+        new_x2 = max(new_x2 - _EXPAND_INSET, x2)
+        new_y2 = max(new_y2 - _EXPAND_INSET, y2)
+
+        new_bw = new_x2 - new_x1
+        new_bh = new_y2 - new_y1
+
+        # Validate expansion with seg mask: the expanded area must have
+        # reasonable text-seg coverage relative to the original bbox.
+        # This prevents false expansion into bright non-text areas (gaps
+        # between dark artwork, page margins, etc.).
+        if seg_full is not None and (new_bw > bw * 1.5 or new_bh > bh * 1.5):
+            orig_seg = seg_full[y1:y2, x1:x2]
+            orig_density = float(orig_seg.mean()) if orig_seg.size > 0 else 0
+            exp_seg = seg_full[new_y1:new_y2, new_x1:new_x2]
+            exp_density = float(exp_seg.mean()) if exp_seg.size > 0 else 0
+
+            # If original area has decent seg coverage but expanded area
+            # drops below 1/3 of original density, revert to original bbox
+            if orig_density > 0.05 and exp_density < orig_density * 0.33:
+                logger.debug(
+                    "Expansion reverted (%d,%d,%d,%d): seg density %.2f→%.2f",
+                    bx, by, bw, bh, orig_density, exp_density,
+                )
+                out.append((bx, by, bw, bh))
+                continue
+
+        if new_bw > bw or new_bh > bh:
+            logger.debug(
+                "Expanded bbox (%d,%d,%d,%d) → (%d,%d,%d,%d)",
+                bx, by, bw, bh, new_x1, new_y1, new_bw, new_bh,
+            )
+
+        out.append((new_x1, new_y1, new_bw, new_bh))
+
+    return out
+
+
+def _dedup_expanded_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    scores: list[float],
+    cls_ids: list[int],
+    containment_ratio: float = 0.50,
+) -> tuple[list[tuple[int, int, int, int]], list[float], list[int]]:
+    """Merge boxes that overlap significantly after expansion.
+
+    Two boxes are merged when:
+      - The intersection area / smaller box area ≥ *containment_ratio*
+    The merged result is the union bounding box.  This prevents the split→
+    expand pipeline from re-creating overlaps, and also catches near-
+    duplicate detections at similar positions.
+    """
+    if len(boxes) < 2:
+        return boxes, scores, cls_ids
+
+    merged = True
+    blist = list(boxes)
+    slist = list(scores)
+    clist = list(cls_ids)
+
+    while merged:
+        merged = False
+        used = [False] * len(blist)
+        new_b: list[tuple[int, int, int, int]] = []
+        new_s: list[float] = []
+        new_c: list[int] = []
+
+        for i in range(len(blist)):
+            if used[i]:
+                continue
+            bx1, by1, bw1, bh1 = blist[i]
+            ax1, ay1, ax2, ay2 = bx1, by1, bx1 + bw1, by1 + bh1
+            best_j = -1
+            best_ratio = containment_ratio
+
+            for j in range(i + 1, len(blist)):
+                if used[j]:
+                    continue
+                bx2, by2, bw2, bh2 = blist[j]
+                bx2a, by2a, bx2b, by2b = bx2, by2, bx2 + bw2, by2 + bh2
+
+                ix1 = max(ax1, bx2a)
+                iy1 = max(ay1, by2a)
+                ix2 = min(ax2, bx2b)
+                iy2 = min(ay2, by2b)
+                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                if inter == 0:
+                    continue
+
+                area_a = bw1 * bh1
+                area_b = bw2 * bh2
+                smaller = min(area_a, area_b) if min(area_a, area_b) > 0 else 1
+                ratio = inter / smaller
+
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_j = j
+
+            if best_j >= 0:
+                bx2, by2, bw2, bh2 = blist[best_j]
+                bx2a, by2a, bx2b, by2b = bx2, by2, bx2 + bw2, by2 + bh2
+                mx1 = min(ax1, bx2a)
+                my1 = min(ay1, by2a)
+                mx2 = max(ax2, bx2b)
+                my2 = max(ay2, by2b)
+                new_b.append((mx1, my1, mx2 - mx1, my2 - my1))
+                new_s.append(max(slist[i], slist[best_j]))
+                # Keep class of larger box
+                if bw1 * bh1 >= bw2 * bh2:
+                    new_c.append(clist[i])
+                else:
+                    new_c.append(clist[best_j])
+                used[i] = True
+                used[best_j] = True
+                merged = True
+                logger.debug(
+                    "Merged expanded boxes (%d,%d,%d,%d)+(%d,%d,%d,%d) → (%d,%d,%d,%d)",
+                    *blist[i], *blist[best_j], mx1, my1, mx2 - mx1, my2 - my1,
+                )
+            else:
+                new_b.append(blist[i])
+                new_s.append(slist[i])
+                new_c.append(clist[i])
+                used[i] = True
+
+        blist = new_b
+        slist = new_s
+        clist = new_c
+
+    return blist, slist, clist
+
+
 @dataclass
 class BubbleInfo:
     """Detected speech bubble metadata."""
@@ -569,8 +879,12 @@ class BubbleDetector:
         boxes, scores, cls_ids = _merge_proximity_boxes(boxes, scores, cls_ids, _PROXIMITY_GAP)
 
         sx, sy = orig_w / _MODEL_INPUT_SIZE, orig_h / _MODEL_INPUT_SIZE
-        bubbles: list[BubbleInfo] = []
-        for i, (box, score, cid) in enumerate(zip(boxes, scores, cls_ids)):
+
+        # Scale boxes from model space to original image coordinates
+        scaled_boxes: list[tuple[int, int, int, int]] = []
+        scaled_scores: list[float] = []
+        scaled_cls: list[int] = []
+        for box, score, cid in zip(boxes, scores, cls_ids):
             bx1 = int(max(0, box[0] * sx))
             by1 = int(max(0, box[1] * sy))
             bx2 = int(min(orig_w, box[2] * sx))
@@ -578,29 +892,51 @@ class BubbleDetector:
             bw, bh = bx2 - bx1, by2 - by1
             if bw * bh < _MIN_AREA:
                 continue
+            scaled_boxes.append((bx1, by1, bw, bh))
+            scaled_scores.append(float(score))
+            scaled_cls.append(int(cid))
+
+        # Split tall boxes that span two connected balloons
+        scaled_boxes, scaled_scores, scaled_cls = _split_tall_boxes(
+            scaled_boxes, scaled_scores, scaled_cls, seg_full,
+        )
+
+        # Expand text-tight bboxes outward to the actual balloon boundary
+        scaled_boxes = _expand_bbox_to_balloon(image, scaled_boxes)
+
+        # Merge boxes that overlap after expansion (split→expand can re-create
+        # overlaps, and near-duplicate detections may survive previous merges).
+        scaled_boxes, scaled_scores, scaled_cls = _dedup_expanded_boxes(
+            scaled_boxes, scaled_scores, scaled_cls,
+        )
+
+        bubbles: list[BubbleInfo] = []
+        for i, ((bx, by, bw, bh), score, cid) in enumerate(
+            zip(scaled_boxes, scaled_scores, scaled_cls)
+        ):
             text_dir = "vertical" if bh > bw * 1.2 else "horizontal"
             bubble_type = "text" if cid == 0 else ("effect" if cid == 2 else "speech")
 
             # ── Build per-bubble mask ────────────────────────────────────
             if seg_full is not None:
                 # Use text_seg segmentation for accurate bubble interior mask
-                roi = seg_full[by1:by2, bx1:bx2]
+                roi = seg_full[by : by + bh, bx : bx + bw]
                 mask_roi = (roi >= _SEG_THRESHOLD).astype(np.uint8) * 255
                 # If seg is empty inside bbox fall back to solid fill
                 if mask_roi.any():
                     full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-                    full_mask[by1:by2, bx1:bx2] = mask_roi
+                    full_mask[by : by + bh, bx : bx + bw] = mask_roi
                 else:
                     full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-                    full_mask[by1:by2, bx1:bx2] = 255
+                    full_mask[by : by + bh, bx : bx + bw] = 255
             else:
                 full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-                full_mask[by1:by2, bx1:bx2] = 255
+                full_mask[by : by + bh, bx : bx + bw] = 255
 
             bubbles.append(
                 BubbleInfo(
                     id=i + 1,
-                    bbox=(bx1, by1, bw, bh),
+                    bbox=(bx, by, bw, bh),
                     mask=full_mask,
                     text_direction=text_dir,
                     bubble_type=bubble_type,

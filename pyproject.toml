@@ -24,6 +24,8 @@ dependencies = [
     "ultralytics>=8.0",
     "accelerate>=1.0",
     "transformers>=4.43",
+    "einops>=0.8",
+    "pulp>=2.9",
 ]
 # comic-text-detector: pip 패키지 아님 — models/ 디렉토리에 가중치 직접 관리
 # simple-lama-inpainting: Pillow<10 요구하여 충돌 — LaMa 추론 직접 구현 (torch + 가중치 다운로드)

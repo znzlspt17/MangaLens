@@ -2,7 +2,7 @@
 
 > **프로젝트명**: MangaLens  
 > **목표**: 일본어 만화/도서 이미지를 입력받아 말풍선을 감지하고, OCR → 번역 → 텍스트 재렌더링하여 번역된 이미지를 출력하는 서비스  
-> **최종 수정**: 2026-03-27 (Phase 16 완료 — 탁음/반탁음 보호 강화, 텍스트 크기 수정 반영)  
+> **최종 수정**: 2026-04-03 (Phase 19 완료 — 연결 말풍선 분리, bbox 자동 확장, 허위 양성 방지)  
 
 ---
 
@@ -27,10 +27,13 @@
 [입력 이미지]
      │
      ▼
-┌─────────────────────┐
-│ ① 말풍선 검출        │  ← comic-text-detector (YOLO 기반)
-│   (Bubble Detection) │     말풍선 bbox + mask 추출
-└─────────┬───────────┘
+┌─────────────────────────┐
+│ ① 말풍선 검출             │  ← comic-text-detector (YOLO 기반)
+│   (Bubble Detection)     │     NMS → 중복 병합 → 근접 병합
+│                          │     → _split_tall_boxes (연결 말풍선 분리)
+│                          │     → _expand_bbox_to_balloon (실제 말풍선 경계 확장)
+│                          │     → _dedup_expanded_boxes (확장 후 중복 제거)
+└─────────┬───────────────┘
           │ bbox 목록 (우→좌 정렬)
           ▼
 ┌─────────────────────┐
@@ -82,13 +85,14 @@
 | 항목 | 내용 |
 |------|------|
 | **기본 모델** | [comic-text-detector](https://github.com/dmMaze/comic-text-detector) (YOLOv5s) |
-| **대체 모델** | [Magi v2](https://huggingface.co/ragavsachdeva/magiv2) — `USE_MAGI_DETECTOR=true`로 활성화 |
+| **대체 모델** | [Magi v2](https://huggingface.co/ragavsachdeva/magiv2) — `USE_MAGI_DETECTOR=true`로 활성화 (requires `einops>=0.8`, `pulp>=2.9`) |
 | **아키텍처** | YOLO 기반 텍스트 영역 + 말풍선 검출 (기본) / Transformer 기반 통합 모델 (Magi) |
 | **출력** | 말풍선 bounding box, 텍스트 영역 mask, 텍스트 방향(세로/가로) |
 | **선택 이유** | 만화 특화, 세로쓰기 방향 판별 내장, 말풍선과 효과음 구분 가능 |
 | **읽기 순서** | 검출 후 bbox를 우→좌, 위→아래로 정렬 (기본) / Magi 내장 reading order 사용 |
 | **나레이션 박스** | 사각형 나레이션/모노로그 박스도 말풍선과 동일하게 검출·처리 |
 | **Magi 추가 기능** | 패널/캐릭터 검출, 화자 연결, VRAM 4GB 이상 필요 (미만 시 YOLOv5 fallback) |
+| **후처리 파이프라인** | `_split_tall_boxes` → `_expand_bbox_to_balloon` (어두운 내부 가드 포함) → `_dedup_expanded_boxes` |
 
 ### 3.2 이미지 업스케일링 — Real-ESRGAN
 

@@ -1,6 +1,6 @@
 # MangaLens — 진행 상황 추적
 
-> 최종 갱신: 2026-03-27 (Phase 17: 노이즈 원인 분석 + 7가지 수정 완료)
+> 최종 갱신: 2026-04-03 (Phase 19: 연결 말풍선 분리 + bbox 확장 + 비말풍선 허위 양성 방지)
 
 ---
 
@@ -196,6 +196,7 @@
 | Phase 16: 탁음/반탁음 오삭제 + 텍스트 크기 과대/과소 수정 | ✅ 126 tests passed, 33/33 pages |
 | Phase 17: 노이즈 근본 원인 7건 수정 (N1~N7) | ✅ 187 tests passed |
 | Phase 18: 타원 말풍선 안전 여백 강화 (_PADDING_PCT 0.08→0.15) | ✅ 64 tests passed |
+| Phase 19: 연결 말풍선 분리 + bbox 확장 + 어두운 내부 허위 양성 방지 | ✅ |
 
 ---
 
@@ -248,6 +249,74 @@
 | 수정 파일 수 | 1 (`text_renderer.py`) |
 | 영향 말풍선 | 모든 가로쓰기 말풍선 — usable 영역 bw×84% → bw×70% |
 | 클리핑 해소 | 이미지 14 balloon[0]/[4]/[5] 포함 대형 타원 전체 정상 확인 |
+
+---
+
+## 2026-04-03 — Phase 19: 연결 말풍선 분리 + bbox 확장 + 허위 양성 방지
+
+### 배경
+실제 번역 결과에서 (1) 세로로 붙어 있는 두 말풍선이 하나로 뭉쳐 검출, (2) YOLO bbox가 실제 말풍선보다 좁아 텍스트 렌더링 공간 부족·글자 잘림, (3) 어두운 장면 텍스트(장르 특유의 효과음/배경 대사) bbox가 확장으로 인해 주변 영역까지 침범하는 허위 양성 발생.
+
+### Magi v2 패키지 수정
+
+| # | 파일 | 수정 내용 |
+|---|------|----------|
+| 1 | `pyproject.toml` | `einops>=0.8`, `pulp>=2.9` 의존성 추가 — `USE_MAGI_DETECTOR=true` 시 `ModuleNotFoundError` 해소 |
+
+### bubble_detector.py 신규 함수 3개
+
+#### 1. `_split_tall_boxes()` — 연결 말풍선 자동 분리
+
+**현상**: `bubble_005.png` — 두 말풍선이 가운데서 좁게 연결돼 하나의 크고 세로로 긴 bbox로 검출  
+**원인**: YOLO가 연결 영역을 포함하여 단일 박스로 예측  
+**해결**: 텍스트 세그 마스크 행 밀도 스캔 → 핀치 포인트(peak의 30% 미만 골짜기) 탐지 → 상하로 분리  
+
+| 조건 | 기준 |
+|------|------|
+| 분리 시도 기준 비율 | `h/w ≥ 3.0` |
+| 최소 높이 | `h ≥ 80px` |
+| 골짜기 임계값 | `밀도 < peak × 0.30` |
+| 각 파트 최소 크기 | `≥ 30px` |
+
+#### 2. `_expand_bbox_to_balloon()` — 실제 말풍선 경계까지 bbox 확장
+
+**현상**: 좁은 YOLO bbox 안에 텍스트가 잘려 12px 폰트 강제, 글자 누락  
+**해결**: 원본 이미지 밝기 기준으로 4방향 탐색 → 흰 말풍선 경계 직전까지 확장  
+
+| 상수 | 값 | 설명 |
+|------|-----|------|
+| `_EXPAND_BRIGHTNESS` | 200 | 확장 중단 밝기 임계값 |
+| `_EXPAND_MAX_PX` | 80 | 방향별 최대 확장 픽셀 |
+| `_EXPAND_INSET` | 4 | 안전 여백 (경계에서 안쪽) |
+
+**seg_full 검증**: 확장 면적이 1.5배 이상이면 세그 밀도 비교 → 1/3 미만이면 확장 취소  
+**허위 양성 방지** (D-037): 내부 평균 밝기 < 160이면 확장 건너뜀  
+
+**제거**: `text_renderer.py`의 `_probe_balloon_width()` (80줄) — 역할이 탐지기 계층으로 완전 이전됨
+
+#### 3. `_dedup_expanded_boxes()` — 확장 후 중복 박스 제거
+
+**현상**: 분리 + 확장 후 인접 bbox가 서로 50% 이상 침범하는 경우 발생  
+**해결**: `intersection / min(area1, area2) ≥ 0.50` 이면 작은 박스를 큰 박스로 흡수  
+
+### 파이프라인 처리 순서 (최신)
+
+```
+NMS → _merge_overlapping_boxes → _merge_proximity_boxes
+  → 스케일 변환(모델→원본 좌표)
+  → _split_tall_boxes
+  → _expand_bbox_to_balloon  ← 허위 양성: 내부 밝기 < 160이면 건너뜀
+  → _dedup_expanded_boxes
+  → BubbleInfo 생성
+```
+
+### Phase 19 수정 파일 목록
+
+| # | 파일 | 수정 내용 |
+|---|------|----------|
+| 1 | `pyproject.toml` | `einops>=0.8`, `pulp>=2.9` 추가 |
+| 2 | `server/pipeline/bubble_detector.py` | `_split_tall_boxes()`, `_expand_bbox_to_balloon()`, `_dedup_expanded_boxes()` 추가, 상수 6개, 내부 밝기 가드, detect() 파이프라인 순서 통합 |
+| 3 | `server/pipeline/text_renderer.py` | `_probe_balloon_width()` (80줄) 제거, `render()`의 프로빙 로직 제거 |
 
 ---
 

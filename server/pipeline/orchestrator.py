@@ -353,7 +353,7 @@ async def run_pipeline(
         log_data["bubbles"].append(bubble_entry)
 
     log_path = output_dir / "translation_log.json"
-    log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2))
+    log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info(
         "[pipeline] Complete: %s → %s (%d ms, %d bubbles, %d translated)",

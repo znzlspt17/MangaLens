@@ -11,6 +11,7 @@ models/*.pt
 models/*.pth
 models/*.onnx
 models/*.bin
+models/
 
 # Output
 output/

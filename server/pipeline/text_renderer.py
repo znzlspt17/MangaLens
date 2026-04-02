@@ -152,9 +152,9 @@ class TextRenderer:
         # the rendered translation.
         use_vertical = False
 
-        # The balloon detector returns the full speech-balloon bbox (not just the
-        # text column).  Render Korean horizontally within the actual balloon size.
-        # No canvas expansion: bw IS the balloon width.
+        # bbox expansion is now handled in bubble_detector._expand_bbox_to_balloon()
+        # so we no longer need to probe width here.
+
         render_w = bw
         fit_h = bh
 
